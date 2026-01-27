@@ -16,29 +16,23 @@ elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "arm")
 endif()
 
 # -----------------------------------------------------------------------------
-# Dependencies: GStreamer
+# Dependencies: GStreamer, Cairo
 # -----------------------------------------------------------------------------
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(GST REQUIRED gstreamer-1.0 gstreamer-app-1.0 gstreamer-rtsp-server-1.0)
+pkg_check_modules(CAIRO REQUIRED cairo)
 
 # -----------------------------------------------------------------------------
 # Dependencies: NCNN (Hardcoded Paths)
 # -----------------------------------------------------------------------------
 message(STATUS "Configuring NCNN with hardcoded paths...")
-
-# Path Verification
 set(NCNN_INCLUDE_DIR "/usr/local/include/ncnn")
 set(NCNN_LIBRARY "/usr/local/lib/libncnn.a")
 
 if(NOT EXISTS "${NCNN_INCLUDE_DIR}/net.h")
-    message(FATAL_ERROR "Critical Error: NCNN header net.h not found at ${NCNN_INCLUDE_DIR}/net.h")
+    message(FATAL_ERROR "Critical Error: NCNN header net.h not found")
 endif()
 
-if(NOT EXISTS "${NCNN_LIBRARY}")
-    message(FATAL_ERROR "Critical Error: NCNN library not found at ${NCNN_LIBRARY}")
-endif()
-
-# OpenMP is required for NCNN
 find_package(OpenMP REQUIRED)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
 
@@ -48,6 +42,7 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
 include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${GST_INCLUDE_DIRS}
+    ${CAIRO_INCLUDE_DIRS}
     ${NCNN_INCLUDE_DIR}
 )
 
@@ -62,6 +57,7 @@ add_executable(NanoStream ${SOURCES})
 
 target_link_libraries(NanoStream
     ${GST_LIBRARIES}
+    ${CAIRO_LIBRARIES}
     ${NCNN_LIBRARY}
     OpenMP::OpenMP_CXX
     pthread
@@ -69,5 +65,5 @@ target_link_libraries(NanoStream
 
 message(STATUS "Build Config Summary:")
 message(STATUS "  - GST Libraries: ${GST_LIBRARIES}")
-message(STATUS "  - NCNN Include: ${NCNN_INCLUDE_DIR}")
+message(STATUS "  - Cairo Includes: ${CAIRO_INCLUDE_DIRS}")
 message(STATUS "  - NCNN Lib: ${NCNN_LIBRARY}")
