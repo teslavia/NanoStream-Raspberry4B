@@ -9,6 +9,10 @@ obj/
 
 # macOS files
 .DS_Store
+._*
+.AppleDouble
+.LSOverride
+**/._*
 
 # Temporary files
 *.swp
