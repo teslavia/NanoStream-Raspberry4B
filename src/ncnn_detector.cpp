@@ -107,28 +107,46 @@ void NCNNDetector::workerLoop() {
             }
             if (!extracted) continue;
 
-            // Layout handling: NanoDet exported from ncnn-assets yields cls with c==1 and classes folded into w, locations in h.
-            if (out_cls.c == 1 && out_reg.c == 1 && out_reg.w == 4 && out_reg.h == out_cls.h) {
-                // cls: w=classes (80), h=locations
-                int num_cls = out_cls.w;
-                int locations = out_cls.h;
-                // reg: w=4, h=locations
+            // Layout handling: NanoDet-m (ncnn-assets) uses distribution regression (reg_max=7, 4*8 bins), and cls folded into w.
+            if (out_cls.c == 1 && out_reg.c == 1 && out_reg.w % 4 == 0 && out_reg.h == out_cls.h) {
+                int num_cls = out_cls.w;            // 80
+                int locations = out_cls.h;          // 1600/400/100
+                int bins = out_reg.w / 4;           // expect 8
+                int feat_w = (int)(std::sqrt((float)locations) + 0.5f);
+                if (feat_w <= 0) feat_w = locations;
+                int feat_h = locations / feat_w;
+                if (feat_w * feat_h != locations) { feat_w = locations; feat_h = 1; }
+
+                auto dist_expect = [&](const float* p) {
+                    float maxv = p[0];
+                    for (int i = 1; i < bins; ++i) maxv = std::max(maxv, p[i]);
+                    float sum = 0.f; float expv;
+                    float expbuf[16];
+                    for (int i = 0; i < bins; ++i) { expv = std::exp(p[i] - maxv); expbuf[i] = expv; sum += expv; }
+                    float v = 0.f;
+                    for (int i = 0; i < bins; ++i) v += (expbuf[i] / sum) * i;
+                    return v;
+                };
+
                 any_head_ok = true;
+                const int topk = 200;
+                int kept = 0;
                 for (int loc = 0; loc < locations; ++loc) {
                     const float* cls_ptr = out_cls.row(loc);
                     const float* reg_ptr = out_reg.row(loc);
-                    // cls already passed through Sigmoid in the model graph; use raw as prob
+
                     float max_score = 0.f;
                     for (int c = 0; c < num_cls; ++c) max_score = std::max(max_score, cls_ptr[c]);
                     if (max_score > max_score_all) max_score_all = max_score;
-                    if (max_score <= 0.15f) continue;
+                    if (max_score <= 0.35f) continue;
+                    if (kept++ > topk) continue;
 
-                    int gx = loc % (out_cls.h == out_reg.h ? out_cls.h : locations); // approximate grid index
-                    int gy = loc / (out_cls.h == out_reg.h ? out_cls.h : locations);
-                    float l = reg_ptr[0] * h.stride;
-                    float t = reg_ptr[1] * h.stride;
-                    float r = reg_ptr[2] * h.stride;
-                    float b = reg_ptr[3] * h.stride;
+                    int gx = loc % feat_w;
+                    int gy = loc / feat_w;
+                    float l = dist_expect(reg_ptr + 0 * bins) * h.stride;
+                    float t = dist_expect(reg_ptr + 1 * bins) * h.stride;
+                    float r = dist_expect(reg_ptr + 2 * bins) * h.stride;
+                    float b = dist_expect(reg_ptr + 3 * bins) * h.stride;
 
                     float scale_x = 640.0f / 320.0f;
                     float scale_y = 480.0f / 320.0f;
@@ -158,7 +176,7 @@ void NCNNDetector::workerLoop() {
                 float score = 1.0f / (1.0f + std::exp(-max_logit));
                 if (score > max_score_all) max_score_all = score;
 
-                if (score > 0.15f) {
+                if (score > 0.35f) {
                     int gx = i % out_cls.w;
                     int gy = i / out_cls.w;
                     
@@ -191,7 +209,7 @@ void NCNNDetector::workerLoop() {
             if (final_dets.size() >= 5) break;
             bool skip = false;
             for (const auto& f : final_dets) {
-                if (std::abs(f.x - d.x) < 30 && std::abs(f.y - d.y) < 30) { skip = true; break; }
+                if (std::abs(f.x - d.x) < 20 && std::abs(f.y - d.y) < 20) { skip = true; break; }
             }
             if (!skip) final_dets.push_back(d);
         }
