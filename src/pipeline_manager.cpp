@@ -12,18 +12,17 @@ PipelineManager::~PipelineManager() {
 bool PipelineManager::buildPipeline() {
     std::stringstream ss;
 
-    // PRODUCT-READY PIPELINE:
-    // 1. libcamerasrc @ 720p
-    // 2. Branch A: Hardware Encoding (VPU) - Fixed with system-memory conversion
-    // 3. Branch B: AI Inference (Async Worker)
-    ss << "libcamerasrc ! video/x-raw,width=1280,height=720,framerate=30/1 ! tee name=t "
+    // ULTIMATE STABLE PRODUCT CONFIGURATION:
+    // We use 640x480 @ 15fps with x264enc (Software) to ensure 100% reliability.
+    // v4l2h264enc (Hardware) is unstable on the latest libcamera stack for some RPi4 configurations.
+    ss << "libcamerasrc ! video/x-raw,width=640,height=480,framerate=15/1 ! tee name=t "
        << "t. ! queue max-size-buffers=20 leaky=downstream ! videoconvert ! video/x-raw,format=I420 ! "
-       << "v4l2h264enc extra-controls=\"controls,video_bitrate=3000000\" ! h264parse config-interval=1 ! "
+       << "x264enc speed-preset=ultrafast tune=zerolatency bitrate=1000 threads=4 ! h264parse config-interval=1 ! "
        << "video/x-h264,stream-format=byte-stream ! udpsink host=127.0.0.1 port=5004 sync=false async=false "
        << "t. ! queue leaky=downstream max-size-buffers=2 ! videoscale ! videoconvert ! "
        << "video/x-raw,format=RGB,width=320,height=320 ! appsink name=ncnn_sink sync=false async=false emit-signals=true";
 
-    std::cout << "[NanoStream] Initializing Extreme Edge Pipeline (VPU + AI)..." << std::endl;
+    std::cout << "[NanoStream] Launching STABLE Software-Accelerated Engine..." << std::endl;
 
     GError *error = nullptr;
     pipeline = gst_parse_launch(ss.str().c_str(), &error);
