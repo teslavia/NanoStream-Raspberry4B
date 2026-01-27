@@ -7,7 +7,7 @@
 #include <cmath>
 
 NCNNDetector::NCNNDetector() {
-    net.opt.num_threads = 3;
+    net.opt.num_threads = 4;
     net.opt.use_packing_layout = true;
     worker_thread = std::thread(&NCNNDetector::workerLoop, this);
 }
@@ -21,7 +21,7 @@ NCNNDetector::~NCNNDetector() {
 
 bool NCNNDetector::loadModel(const std::string &paramPath, const std::string &binPath) {
     if (net.load_param(paramPath.c_str()) == 0 && net.load_model(binPath.c_str()) == 0) {
-        std::cout << "[AI] Model loaded. High-sensitivity mode active." << std::endl;
+        std::cout << "[AI] Precision Tracking Engine Initialized." << std::endl;
         return true;
     }
     return false;
@@ -47,6 +47,11 @@ std::vector<Detection> NCNNDetector::getDetections() {
 }
 
 void NCNNDetector::workerLoop() {
+    // 用于 EMA 平滑的历史记录 (Persistent Box State)
+    struct State { int x, y, w, h; bool active; };
+    std::vector<State> history;
+    const float alpha = 0.4f; // 平滑系数：越小越丝滑，越大越跟手
+
     while (running) {
         std::vector<unsigned char> local_frame;
         int w, h;
@@ -70,72 +75,87 @@ void NCNNDetector::workerLoop() {
         ex.set_light_mode(true);
         ex.input("input.1", in);
         
-        // 抓取全尺度分类输出头 (对应 Strides: 8, 16, 32)
-        std::vector<std::pair<std::string, int>> heads = {
-            {"792", 8},  // Small Objects (e.g. cup, phone)
-            {"814", 16}, // Medium Objects
-            {"836", 32}  // Large Objects (e.g. person)
-        };
+        // 同时提取分类 (Cls) 和回归 (Reg) 分支
+        // Stride 16 (Medium) 和 Stride 32 (Large)
+        std::vector<int> cls_nodes = {814, 836};
+        std::vector<int> reg_nodes = {817, 839};
+        std::vector<int> strides = {16, 32};
 
-        std::vector<Detection> dets;
-        for (auto& head : heads) {
-            ncnn::Mat out;
-            if (ex.extract(head.first.c_str(), out) != 0) continue;
+        std::vector<Detection> raw_dets;
+        for (size_t k = 0; k < cls_nodes.size(); k++) {
+            ncnn::Mat out_cls, out_reg;
+            ex.extract(std::to_string(cls_nodes[k]).c_str(), out_cls);
+            ex.extract(std::to_string(reg_nodes[k]).c_str(), out_reg);
 
-            int stride = head.second;
-            int num_grid = out.w * out.h;
-            int num_class = out.c;
-
-            for (int i = 0; i < num_grid; i++) {
-                // 在所有类别中寻找最高分
-                float max_cls_score = 0;
-                for (int c = 0; c < num_class; c++) {
-                    float score = out.channel(c)[i];
-                    if (score > max_cls_score) max_cls_score = score;
+            int stride = strides[k];
+            for (int i = 0; i < out_cls.w * out_cls.h; i++) {
+                float score = 0;
+                for (int c = 0; c < out_cls.c; c++) {
+                    score = std::max(score, out_cls.channel(c)[i]);
                 }
 
-                if (max_cls_score > 0.25f) { // 灵敏度阈值下调
-                    int grid_x = i % out.w;
-                    int grid_y = i / out.w;
+                if (score > 0.42f) { // 提高阈值，消除背景噪音
+                    int gx = i % out_cls.w;
+                    int gy = i / out_cls.w;
+                    
+                    // 解码回归：NanoDet 简化版解码 (取 reg 通道的近似均值)
+                    float reg_val = out_reg.channel(0)[i] * stride;
                     
                     Detection d;
-                    d.x = (grid_x * 640) / out.w;
-                    d.y = (grid_y * 480) / out.h;
-                    // 动态调整框大小：根据步长(Stride)粗略估计目标大小
-                    d.w = stride * 6; 
-                    d.h = stride * 10;
-                    d.score = max_cls_score;
+                    d.x = (gx * stride * 640) / 320;
+                    d.y = (gy * stride * 480) / 320;
+                    d.w = reg_val * 6.0f; // 动态宽度
+                    d.h = reg_val * 8.0f; // 动态高度
+                    d.score = score;
                     d.label = "Target";
-
-                    // 空间抑制 (NMS 简化版)
-                    bool duplicate = false;
-                    for (const auto& existing : dets) {
-                        if (std::abs(existing.x - d.x) < (stride * 2) && 
-                            std::abs(existing.y - d.y) < (stride * 2)) {
-                            duplicate = true; break;
+                    
+                    // 极简 IoU 去重
+                    bool is_duplicate = false;
+                    for (auto& r : raw_dets) {
+                        if (std::abs(r.x - d.x) < 40 && std::abs(r.y - d.y) < 40) {
+                            is_duplicate = true; break;
                         }
                     }
-                    if (!duplicate) dets.push_back(d);
+                    if (!is_duplicate) raw_dets.push_back(d);
                 }
             }
         }
 
-        auto end = std::chrono::high_resolution_clock::now();
-        auto lat = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
-
-        // 仅在发现目标时静默打印数量，避免刷屏
-        if (!dets.empty()) {
-            static int frame_cnt = 0;
-            if (frame_cnt++ % 15 == 0) {
-                std::cout << "\r[NanoStream] Detected: " << dets.size() << " | Latency: " << lat << "ms    " << std::flush;
+        // --- 时间平滑算法 (EMA) ---
+        if (!raw_dets.empty()) {
+            std::sort(raw_dets.begin(), raw_dets.end(), [](const Detection& a, const Detection& b){
+                return a.score > b.score;
+            });
+            
+            // 仅对前 3 个主要目标进行平滑处理
+            size_t num = std::min(raw_dets.size(), (size_t)3);
+            std::vector<Detection> smoothed;
+            for (size_t i = 0; i < num; i++) {
+                Detection d = raw_dets[i];
+                if (history.size() <= i) {
+                    history.push_back({d.x, d.y, d.w, d.h, true});
+                } else {
+                    history[i].x = (int)(alpha * d.x + (1.0f - alpha) * history[i].x);
+                    history[i].y = (int)(alpha * d.y + (1.0f - alpha) * history[i].y);
+                    history[i].w = (int)(alpha * d.w + (1.0f - alpha) * history[i].w);
+                    history[i].h = (int)(alpha * d.h + (1.0f - alpha) * history[i].h);
+                }
+                d.x = history[i].x; d.y = history[i].y;
+                d.w = history[i].w; d.h = history[i].h;
+                smoothed.push_back(d);
             }
-        } else {
-            std::cout << "\r[NanoStream] Scanning... Latency: " << lat << "ms    " << std::flush;
-        }
+            
+            auto end = std::chrono::high_resolution_clock::now();
+            auto lat = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+            std::cout << "\r[NanoStream] Tracking: " << smoothed.size() << " | Latency: " << lat << "ms    " << std::flush;
 
-        {
             std::lock_guard<std::mutex> lock(result_mutex);
-            current_detections = dets;
+            current_detections = smoothed;
+        } else {
+            std::lock_guard<std::mutex> lock(result_mutex);
+            current_detections.clear();
+            history.clear();
+            std::cout << "\r[NanoStream] Scanning...                " << std::flush;
         }
     }
 }
