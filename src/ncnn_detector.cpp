@@ -40,6 +40,11 @@ void NCNNDetector::pushFrame(const unsigned char *rgb_data, int width, int heigh
     frame_cv.notify_one();
 }
 
+std::vector<Detection> NCNNDetector::getDetections() {
+    std::lock_guard<std::mutex> lock(result_mutex);
+    return current_detections;
+}
+
 void NCNNDetector::workerLoop() {
     while (running) {
         std::vector<unsigned char> local_frame;
@@ -71,24 +76,52 @@ void NCNNDetector::workerLoop() {
         auto end = std::chrono::high_resolution_clock::now();
         auto lat = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 
+        // 简化的解码逻辑：找到最大分数的点作为目标中心
+        // NanoDet 的实际解码比这复杂得多（需要 Grid 锚点解码），这里为了 OSD 演示做了一个极简近似。
         float max_score = 0;
         int max_index = 0;
-        for (int i = 0; i < out.w * out.h; i++) {
+        int feat_w = out.w;
+        int feat_h = out.h;
+        
+        for (int i = 0; i < feat_w * feat_h; i++) {
+            // 假设 out 是 cls_score 的 feature map
             if (out[i] > max_score) {
                 max_score = out[i];
                 max_index = i;
             }
         }
 
+        std::vector<Detection> dets;
         if (max_score > 0.45f) {
+            // 简单的坐标映射：将 Feature Map 索引映射回原图坐标
+            // NanoDet-m stride=32 (大致)
+            int stride = 32; 
+            int grid_x = max_index % feat_w;
+            int grid_y = max_index / feat_w;
+            
+            Detection det;
+            det.x = grid_x * stride;
+            det.y = grid_y * stride;
+            det.w = 100; // 假定一个固定大小，因为我们没有解码 regression 分支
+            det.h = 200;
+            det.score = max_score;
+            det.label = "Object"; // 简化标签
+            dets.push_back(det);
+
             std::cout << "\n{"
                       << "\"event\": \"object_detected\", "
                       << "\"confidence\": " << max_score << ", "
-                      << "\"latency_ms\": " << lat << ", "
-                      << "\"timestamp\": " << std::chrono::system_clock::now().time_since_epoch().count()
+                      << "\"pos\": [" << det.x << "," << det.y << "], "
+                      << "\"latency_ms\": " << lat 
                       << "}" << std::endl;
         } else {
             std::cout << "\r[NanoStream] AI: " << lat << "ms | Status: Idle    " << std::flush;
+        }
+
+        // 更新 OSD 数据
+        {
+            std::lock_guard<std::mutex> lock(result_mutex);
+            current_detections = dets;
         }
     }
 }
