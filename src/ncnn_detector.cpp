@@ -28,7 +28,12 @@ bool NCNNDetector::loadModel(const std::string &paramPath, const std::string &bi
 
 void NCNNDetector::pushFrame(const unsigned char *rgb_data, int width, int height) {
     std::unique_lock<std::mutex> lock(frame_mutex, std::try_to_lock);
-    if (!lock.owns_lock()) return;
+    if (!lock.owns_lock()) {
+        std::cout << "x" << std::flush;
+        return; 
+    }
+    
+    std::cout << "." << std::flush;
     
     size_t size = width * height * 3;
     if (pending_frame.size() != size) pending_frame.resize(size);
@@ -54,6 +59,7 @@ void NCNNDetector::workerLoop() {
             std::unique_lock<std::mutex> lock(frame_mutex);
             frame_cv.wait(lock, [this]{ return has_new_frame || !running; });
             if (!running) break;
+            
             local_frame = std::move(pending_frame);
             w = img_w; h = img_h;
             has_new_frame = false;
@@ -76,9 +82,6 @@ void NCNNDetector::workerLoop() {
         auto end = std::chrono::high_resolution_clock::now();
         auto lat = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 
-        // 简化的解码逻辑：找到最大分数的点作为目标中心
-        // NanoDet 的实际解码比这复杂得多（需要 Grid 锚点解码），这里为了 OSD 演示做了一个极简近似。
-        // 遍历所有数据找到最大得分 (修复之前的 Channel 0 限制)
         float max_score = 0;
         int total_elements = out.w * out.h * out.c;
         for (int i = 0; i < total_elements; i++) {
@@ -87,60 +90,26 @@ void NCNNDetector::workerLoop() {
 
         std::vector<Detection> dets;
         
-        // 强制添加一个测试框 (左上角红色 50x50)，用于验证 OSD 链路是否通畅
+        // Diagnostic: Add a fixed TEST box
         Detection test_box;
-        test_box.x = 20; test_box.y = 20; test_box.w = 50; test_box.h = 50;
+        test_box.x = 20; test_box.y = 20; test_box.w = 100; test_box.h = 50;
         test_box.label = "TEST";
         test_box.score = 1.0;
         dets.push_back(test_box);
 
-        if (max_score > 0.25f) { // 降低阈值到 0.25
-            // 极简近似解码：假设中心位置
+        if (max_score > 0.25f) {
             Detection det;
             det.x = 200; det.y = 200; det.w = 150; det.h = 200;
             det.score = max_score;
             det.label = "Target";
             dets.push_back(det);
 
-            std::cout << "\n{\"event\": \"detected\", \"confidence\": " << max_score << "}" << std::endl;
+            std::cout << "\n{\"event\": \"detected\", \"confidence\": " << max_score 
+                      << ", \"latency_ms\": " << lat << "}" << std::endl;
         } else {
             std::cout << "\r[NanoStream] AI: " << lat << "ms | Status: Idle    " << std::flush;
         }
 
-        {
-            std::lock_guard<std::mutex> lock(result_mutex);
-            current_detections = dets;
-        }
-        }
-
-        std::vector<Detection> dets;
-        if (max_score > 0.45f) {
-            // 简单的坐标映射：将 Feature Map 索引映射回原图坐标
-            // NanoDet-m stride=32 (大致)
-            int stride = 32; 
-            int grid_x = max_index % feat_w;
-            int grid_y = max_index / feat_w;
-            
-            Detection det;
-            det.x = grid_x * stride;
-            det.y = grid_y * stride;
-            det.w = 100; // 假定一个固定大小，因为我们没有解码 regression 分支
-            det.h = 200;
-            det.score = max_score;
-            det.label = "Object"; // 简化标签
-            dets.push_back(det);
-
-            std::cout << "\n{"
-                      << "\"event\": \"object_detected\", "
-                      << "\"confidence\": " << max_score << ", "
-                      << "\"pos\": [" << det.x << "," << det.y << "], "
-                      << "\"latency_ms\": " << lat 
-                      << "}" << std::endl;
-        } else {
-            std::cout << "\r[NanoStream] AI: " << lat << "ms | Status: Idle    " << std::flush;
-        }
-
-        // 更新 OSD 数据
         {
             std::lock_guard<std::mutex> lock(result_mutex);
             current_detections = dets;
