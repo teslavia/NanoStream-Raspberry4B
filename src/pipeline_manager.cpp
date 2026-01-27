@@ -15,7 +15,7 @@ bool PipelineManager::buildPipeline() {
     // VPU Hardware Pipeline: libcamerasrc -> OSD -> v4l2h264enc
     ss << "libcamerasrc ! video/x-raw,width=640,height=480,framerate=15/1 ! tee name=t "
        << "t. ! queue max-size-buffers=20 leaky=downstream ! "
-       << "videoconvert ! cairooverlay name=osd ! video/x-raw,format=I420 ! "
+       << "videoconvert ! cairooverlay name=osd ! videoconvert ! video/x-raw,format=I420 ! "
        << "v4l2h264enc extra-controls=\"controls,video_bitrate=3000000\" ! h264parse config-interval=1 ! "
        << "video/x-h264,stream-format=byte-stream ! udpsink host=127.0.0.1 port=5004 sync=false async=false "
        << "t. ! queue leaky=downstream max-size-buffers=2 ! videoscale ! videoconvert ! "
