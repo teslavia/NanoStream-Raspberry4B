@@ -2,10 +2,26 @@
 build/
 bin/
 obj/
+*.o
+*.a
+*.so
+*.dylib
+*.out
 
-# NCNN Models (Optional: exclude if you want users to download them via script)
-# models/*.param
-# models/*.bin
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+install_manifest.txt
+compile_commands.json
+.cmake/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
 
 # macOS files
 .DS_Store
@@ -13,10 +29,18 @@ obj/
 .AppleDouble
 .LSOverride
 **/._*
+.Spotlight-V100
+.Trashes
 
-# Temporary files
-*.swp
+# Linux temp files
+*~
+.nfs*
+
+# Temporary/Log files
 *.log
-
-# GStreamer debug output
 gst-debug-log*
+gmon.out
+
+# NCNN Models (Optional: exclude if you want users to download them via script)
+# models/*.param
+# models/*.bin
