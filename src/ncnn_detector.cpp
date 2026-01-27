@@ -101,7 +101,7 @@ void NCNNDetector::workerLoop() {
                 float score = 0;
                 for (int c = 0; c < out_cls.c; c++) score = std::max(score, out_cls.channel(c)[i]);
 
-                if (score > 0.45f) {
+                if (score > 0.30f) {
                     int gx = i % out_cls.w;
                     int gy = i / out_cls.w;
                     
@@ -135,10 +135,10 @@ void NCNNDetector::workerLoop() {
         std::sort(raw_dets.begin(), raw_dets.end(), [](const Detection& a, const Detection& b){ return a.score > b.score; });
         std::vector<Detection> final_dets;
         for (const auto& d : raw_dets) {
-            if (final_dets.size() >= 3) break;
+            if (final_dets.size() >= 5) break;
             bool skip = false;
             for (const auto& f : final_dets) {
-                if (std::abs(f.x - d.x) < 50 && std::abs(f.y - d.y) < 50) { skip = true; break; }
+                if (std::abs(f.x - d.x) < 30 && std::abs(f.y - d.y) < 30) { skip = true; break; }
             }
             if (!skip) final_dets.push_back(d);
         }
