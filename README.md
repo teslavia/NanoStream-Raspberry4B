@@ -185,6 +185,16 @@ sh scripts/build.sh
 
 ---
 
+## ✅ P1 交付指南
+详细的 P1 执行清单、验收标准与测试步骤见：
+`docs/P1.md`
+
+### WebRTC 旁路部署（MediaMTX）
+模板位于：
+`deploy/mediamtx`
+
+---
+
 ## 📊 性能指标 (RPi 4B @ 1.5GHz)
 | 模块 | 分辨率 | 负载/延迟 |
 | :--- | :--- | :--- |
