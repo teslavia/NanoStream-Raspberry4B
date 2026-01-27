@@ -71,17 +71,24 @@ void NCNNDetector::workerLoop() {
         auto end = std::chrono::high_resolution_clock::now();
         auto lat = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 
-        // Metadata JSON Output
         float max_score = 0;
+        int max_index = 0;
         for (int i = 0; i < out.w * out.h; i++) {
-            if (out[i] > max_score) max_score = out[i];
+            if (out[i] > max_score) {
+                max_score = out[i];
+                max_index = i;
+            }
         }
 
-        if (max_score > 0.4f) {
-            std::cout << "\n{\"event\": \"detection\", \"confidence\": " << max_score 
-                      << ", \"latency_ms\": " << lat << "}" << std::endl;
+        if (max_score > 0.45f) {
+            std::cout << "\n{"
+                      << "\"event\": \"object_detected\", "
+                      << "\"confidence\": " << max_score << ", "
+                      << "\"latency_ms\": " << lat << ", "
+                      << "\"timestamp\": " << std::chrono::system_clock::now().time_since_epoch().count()
+                      << "}" << std::endl;
         } else {
-            std::cout << "\r[NanoStream] AI: " << lat << "ms | Stream: OK    " << std::flush;
+            std::cout << "\r[NanoStream] AI: " << lat << "ms | Status: Idle    " << std::flush;
         }
     }
 }
