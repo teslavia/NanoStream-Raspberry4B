@@ -97,7 +97,7 @@ void NCNNDetector::workerLoop() {
             int cls_ret = ex.extract(h.cls.c_str(), out_cls);
             int reg_ret = ex.extract(h.reg.c_str(), out_reg);
             if (cls_ret != 0 || out_cls.empty() || reg_ret != 0 || out_reg.empty()) {
-                if (frame_id % 120 == 0) {
+                if (frame_id % 30 == 0) {
                     std::cout << "\r[NanoStream] Head " << h.cls << "/" << h.reg
                               << " extract failed (cls=" << cls_ret << ", reg=" << reg_ret << ")    " << std::flush;
                 }
@@ -108,13 +108,18 @@ void NCNNDetector::workerLoop() {
             if (out_reg.c < 4) continue;
             any_head_ok = true;
 
+            if (frame_id < 3) {
+                std::cout << "\r[NanoStream] Head " << h.cls << ": cls_shape=" << out_cls.w << "x" << out_cls.h << "x" << out_cls.c
+                          << " reg_c=" << out_reg.c << "    " << std::flush;
+            }
+
             for (int i = 0; i < out_cls.w * out_cls.h; i++) {
                 float max_logit = -1e9f;
                 for (int c = 0; c < out_cls.c; c++) max_logit = std::max(max_logit, out_cls.channel(c)[i]);
                 float score = 1.0f / (1.0f + std::exp(-max_logit));
                 if (score > max_score_all) max_score_all = score;
 
-                if (score > 0.30f) {
+                if (score > 0.15f) {
                     int gx = i % out_cls.w;
                     int gy = i / out_cls.w;
                     
