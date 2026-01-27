@@ -18,6 +18,10 @@
     <div class="row">
       <label>WebRTC URL:</label>
       <input id="webrtcUrl" value="http://192.168.1.48:8889/" />
+    </div>
+    <div class="row">
+      <label>Path:</label>
+      <input id="webrtcPath" value="live" />
       <button id="startBtn">Start</button>
       <button id="stopBtn">Stop</button>
     </div>
@@ -32,6 +36,7 @@
       const startBtn = document.getElementById('startBtn');
       const stopBtn = document.getElementById('stopBtn');
       const webrtcUrlInput = document.getElementById('webrtcUrl');
+      const webrtcPathInput = document.getElementById('webrtcPath');
 
       let pc = null;
 
@@ -48,18 +53,56 @@
         const offer = await pc.createOffer({ offerToReceiveVideo: true });
         await pc.setLocalDescription(offer);
 
-        const res = await fetch(webrtcUrlInput.value.replace(/\/$/, '') + '/webrtc', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sdp: pc.localDescription.sdp, type: pc.localDescription.type })
-        });
+        const baseUrl = webrtcUrlInput.value.replace(/\/$/, '');
+        const pathValue = (webrtcPathInput.value.trim() || 'live');
+        const bodyWithPath = {
+          sdp: pc.localDescription.sdp,
+          type: pc.localDescription.type,
+          path: pathValue
+        };
 
-        if (!res.ok) {
-          throw new Error('HTTP ' + res.status);
+        const endpoints = [
+          { path: '/webrtc?path=' + encodeURIComponent(pathValue), mode: 'json' },
+          { path: '/webrtc', mode: 'json' },
+          { path: '/v1/webrtc?path=' + encodeURIComponent(pathValue), mode: 'json' },
+          { path: '/v1/webrtc', mode: 'json' },
+          { path: '/whep?path=' + encodeURIComponent(pathValue), mode: 'sdp' },
+          { path: '/v1/whep?path=' + encodeURIComponent(pathValue), mode: 'sdp' }
+        ];
+
+        let res = null;
+        let mode = 'json';
+        for (const endpoint of endpoints) {
+          mode = endpoint.mode;
+          if (mode === 'sdp') {
+            res = await fetch(baseUrl + endpoint.path, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/sdp' },
+              body: pc.localDescription.sdp
+            });
+          } else {
+            res = await fetch(baseUrl + endpoint.path, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: endpoint.path.includes('?path=')
+                ? JSON.stringify({ sdp: bodyWithPath.sdp, type: bodyWithPath.type })
+                : JSON.stringify(bodyWithPath)
+            });
+          }
+          if (res.status !== 404) break;
         }
 
-        const data = await res.json();
-        await pc.setRemoteDescription(new RTCSessionDescription(data));
+        if (!res || !res.ok) {
+          throw new Error('HTTP ' + (res ? res.status : 'no response'));
+        }
+
+        if (mode === 'sdp') {
+          const answerSdp = await res.text();
+          await pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: answerSdp }));
+        } else {
+          const data = await res.json();
+          await pc.setRemoteDescription(new RTCSessionDescription(data));
+        }
       }
 
       function stop() {
