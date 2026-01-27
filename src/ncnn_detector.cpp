@@ -30,8 +30,11 @@ bool NCNNDetector::loadModel(const std::string &paramPath, const std::string &bi
 void NCNNDetector::pushFrame(const unsigned char *rgb_data, int width, int height) {
     std::unique_lock<std::mutex> lock(frame_mutex, std::try_to_lock);
     if (!lock.owns_lock()) return;
-    
-    size_t size = width * height * 3;
+
+    if (!rgb_data || width <= 0 || height <= 0) return;
+
+    size_t size = static_cast<size_t>(width) * static_cast<size_t>(height) * 3;
+    if (size == 0) return;
     if (pending_frame.size() != size) pending_frame.resize(size);
     memcpy(pending_frame.data(), rgb_data, size);
     
@@ -63,6 +66,10 @@ void NCNNDetector::workerLoop() {
             has_new_frame = false;
         }
 
+        if (w <= 0 || h <= 0) continue;
+        const size_t expected_size = static_cast<size_t>(w) * static_cast<size_t>(h) * 3;
+        if (local_frame.size() < expected_size) continue;
+
         auto start = std::chrono::high_resolution_clock::now();
         ncnn::Mat in = ncnn::Mat::from_pixels(local_frame.data(), ncnn::Mat::PIXEL_RGB, w, h);
         const float mean_vals[3] = {103.53f, 116.28f, 123.675f};
@@ -86,6 +93,9 @@ void NCNNDetector::workerLoop() {
             ncnn::Mat out_cls, out_reg;
             if (ex.extract(h.cls.c_str(), out_cls) != 0 || out_cls.empty()) continue;
             if (ex.extract(h.reg.c_str(), out_reg) != 0 || out_reg.empty()) continue;
+
+            if (out_cls.w <= 0 || out_cls.h <= 0 || out_cls.c <= 0) continue;
+            if (out_reg.c < 4) continue;
 
             for (int i = 0; i < out_cls.w * out_cls.h; i++) {
                 float score = 0;

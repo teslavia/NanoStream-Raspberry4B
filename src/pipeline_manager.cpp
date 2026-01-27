@@ -2,6 +2,7 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <algorithm>
 #include <gst/app/gstappsink.h>
 #include <cairo.h>
 #include <cairo-gobject.h>
@@ -21,18 +22,34 @@ void PipelineManager::draw_overlay(cairo_t *cr) {
     cairo_set_line_width(cr, 3.0);
 
     for (const auto& det : dets) {
+        int x = det.x;
+        int y = det.y;
+        int w = det.w;
+        int h = det.h;
+        if (w <= 0 || h <= 0) continue;
+
+        x = std::max(0, std::min(x, 639));
+        y = std::max(0, std::min(y, 479));
+        w = std::min(w, 640 - x);
+        h = std::min(h, 480 - y);
+        if (w <= 0 || h <= 0) continue;
+
         // 画绿色边框
         cairo_set_source_rgb(cr, 0.0, 1.0, 0.0); 
-        cairo_rectangle(cr, det.x, det.y, det.w, det.h);
+        cairo_rectangle(cr, x, y, w, h);
         cairo_stroke(cr);
         
         // 写标签背景
-        cairo_rectangle(cr, det.x, det.y - 25, 100, 25);
+        int label_x = x;
+        int label_y = std::max(0, y - 25);
+        int label_w = std::min(100, 640 - label_x);
+        if (label_w <= 0) continue;
+        cairo_rectangle(cr, label_x, label_y, label_w, 25);
         cairo_fill(cr);
 
         // 写白色文字
         cairo_set_source_rgb(cr, 1.0, 1.0, 1.0);
-        cairo_move_to(cr, det.x + 5, det.y - 5);
+        cairo_move_to(cr, label_x + 5, label_y + 20);
         cairo_show_text(cr, det.label.c_str());
     }
 }
