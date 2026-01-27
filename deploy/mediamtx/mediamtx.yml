@@ -1,12 +1,10 @@
 # MediaMTX configuration
 # RTSP source: rtsp://<RaspberryPi_IP>:8554/live
+rtsp: yes
+rtspAddress: :8555
+webrtc: yes
 
 paths:
   live:
     source: rtsp://127.0.0.1:8554/live
 
-webrtc:
-  enabled: yes
-
-rtsp:
-  enabled: yes
