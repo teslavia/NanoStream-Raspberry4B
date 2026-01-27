@@ -90,7 +90,7 @@ void NCNNDetector::workerLoop() {
         };
 
         std::vector<Detection> raw_dets;
-        float max_score_all = 0.0f;
+        float max_score_all = -1e9f;
         for (const auto& h : heads) {
             ncnn::Mat out_cls, out_reg;
             if (ex.extract(h.cls.c_str(), out_cls) != 0 || out_cls.empty()) continue;
@@ -100,11 +100,12 @@ void NCNNDetector::workerLoop() {
             if (out_reg.c < 4) continue;
 
             for (int i = 0; i < out_cls.w * out_cls.h; i++) {
-                float score = 0;
-                for (int c = 0; c < out_cls.c; c++) score = std::max(score, out_cls.channel(c)[i]);
+                float max_logit = -1e9f;
+                for (int c = 0; c < out_cls.c; c++) max_logit = std::max(max_logit, out_cls.channel(c)[i]);
+                float score = 1.0f / (1.0f + std::exp(-max_logit));
                 if (score > max_score_all) max_score_all = score;
 
-                if (score > 0.20f) {
+                if (score > 0.30f) {
                     int gx = i % out_cls.w;
                     int gy = i / out_cls.w;
                     
