@@ -96,22 +96,20 @@ void NCNNDetector::workerLoop() {
             ncnn::Mat out_cls, out_reg;
             int cls_ret = ex.extract(h.cls.c_str(), out_cls);
             int reg_ret = ex.extract(h.reg.c_str(), out_reg);
-            if (cls_ret != 0 || out_cls.empty() || reg_ret != 0 || out_reg.empty()) {
-                if (frame_id < 3 || frame_id % 30 == 0) {
-                    std::cout << "\r[NanoStream] Head " << h.cls << "/" << h.reg
-                              << " extract failed (cls=" << cls_ret << ", reg=" << reg_ret << ")    " << std::flush;
-                }
-                continue;
+            bool extracted = (cls_ret == 0 && reg_ret == 0 && !out_cls.empty() && !out_reg.empty());
+            if (frame_id < 5) {
+                std::cout << "\n[Diag] Head " << h.cls << "/" << h.reg
+                          << " cls_ret=" << cls_ret << " reg_ret=" << reg_ret
+                          << " cls_shape=" << out_cls.w << "x" << out_cls.h << "x" << out_cls.c
+                          << " reg_c=" << out_reg.c
+                          << " cls_empty=" << out_cls.empty() << " reg_empty=" << out_reg.empty()
+                          << std::endl;
             }
+            if (!extracted) continue;
 
             if (out_cls.w <= 0 || out_cls.h <= 0 || out_cls.c <= 0) continue;
             if (out_reg.c < 4) continue;
             any_head_ok = true;
-
-            if (frame_id < 3 || frame_id % 30 == 0) {
-                std::cout << "\r[NanoStream] Head " << h.cls << ": cls_shape=" << out_cls.w << "x" << out_cls.h << "x" << out_cls.c
-                          << " reg_c=" << out_reg.c << "    " << std::flush;
-            }
 
             for (int i = 0; i < out_cls.w * out_cls.h; i++) {
                 float max_logit = -1e9f;
