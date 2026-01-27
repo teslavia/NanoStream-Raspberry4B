@@ -28,12 +28,7 @@ bool NCNNDetector::loadModel(const std::string &paramPath, const std::string &bi
 
 void NCNNDetector::pushFrame(const unsigned char *rgb_data, int width, int height) {
     std::unique_lock<std::mutex> lock(frame_mutex, std::try_to_lock);
-    if (!lock.owns_lock()) {
-        std::cout << "x" << std::flush;
-        return; 
-    }
-    
-    std::cout << "." << std::flush;
+    if (!lock.owns_lock()) return;
     
     size_t size = width * height * 3;
     if (pending_frame.size() != size) pending_frame.resize(size);
@@ -82,34 +77,43 @@ void NCNNDetector::workerLoop() {
         auto end = std::chrono::high_resolution_clock::now();
         auto lat = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 
+        // 寻找最大得分及其索引
         float max_score = 0;
-        int total_elements = out.w * out.h * out.c;
-        for (int i = 0; i < total_elements; i++) {
-            if (out[i] > max_score) max_score = out[i];
+        int max_idx = 0;
+        for (int i = 0; i < out.w * out.h; i++) {
+            if (out[i] > max_score) {
+                max_score = out[i];
+                max_idx = i;
+            }
         }
 
         std::vector<Detection> dets;
-        
-        // Diagnostic: Add a fixed TEST box
-        Detection test_box;
-        test_box.x = 20; test_box.y = 20; test_box.w = 100; test_box.h = 50;
-        test_box.label = "TEST";
-        test_box.score = 1.0;
-        dets.push_back(test_box);
-
-        if (max_score > 0.25f) {
+        // 动态阈值判断
+        if (max_score > 0.30f) {
+            // 将网格索引映射回 640x480 坐标
+            // 假设输出特征图大小为 out.w x out.h
+            int grid_x = max_idx % out.w;
+            int grid_y = max_idx / out.w;
+            
             Detection det;
-            det.x = 200; det.y = 200; det.w = 150; det.h = 200;
+            // 粗略映射逻辑：映射到视频画面中心区域
+            det.x = (grid_x * 640) / out.w;
+            det.y = (grid_y * 480) / out.h;
+            det.w = 120; // 假定大小
+            det.h = 160;
             det.score = max_score;
             det.label = "Target";
             dets.push_back(det);
 
-            std::cout << "\n{\"event\": \"detected\", \"confidence\": " << max_score 
-                      << ", \"latency_ms\": " << lat << "}" << std::endl;
-        } else {
-            std::cout << "\r[NanoStream] AI: " << lat << "ms | Status: Idle    " << std::flush;
+            // 限制日志输出频率，每隔 5 帧打印一次有效检测
+            static int log_counter = 0;
+            if (log_counter++ % 5 == 0) {
+                std::cout << "\n{\"event\": \"detection\", \"score\": " << max_score 
+                          << ", \"x\": " << det.x << ", \"y\": " << det.y << "}" << std::endl;
+            }
         }
 
+        // 更新结果供 OSD 线程读取
         {
             std::lock_guard<std::mutex> lock(result_mutex);
             current_detections = dets;
