@@ -62,6 +62,8 @@
         };
 
         const endpoints = [
+          { path: '/' + pathValue + '/webrtc', mode: 'json' },
+          { path: '/' + pathValue + '/whep', mode: 'sdp' },
           { path: '/webrtc?path=' + encodeURIComponent(pathValue), mode: 'json' },
           { path: '/webrtc', mode: 'json' },
           { path: '/v1/webrtc?path=' + encodeURIComponent(pathValue), mode: 'json' },
