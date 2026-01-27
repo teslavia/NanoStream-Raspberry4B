@@ -44,10 +44,10 @@ bool PipelineManager::buildPipeline() {
     std::stringstream ss;
 
     // STABLE ENGINE: x264enc + OSD + 640x480
-    // I420 is chosen as the common ground for Cairo and x264enc
+    // Force BGRx for Cairo OSD, then convert to I420 for encoder
     ss << "libcamerasrc ! video/x-raw,width=640,height=480,framerate=15/1 ! tee name=t "
        << "t. ! queue max-size-buffers=10 leaky=downstream ! "
-       << "videoconvert ! video/x-raw,format=I420 ! cairooverlay name=osd ! "
+       << "videoconvert ! video/x-raw,format=BGRx ! cairooverlay name=osd ! videoconvert ! video/x-raw,format=I420 ! "
        << "x264enc speed-preset=ultrafast tune=zerolatency bitrate=1000 threads=4 ! h264parse config-interval=1 ! "
        << "video/x-h264,stream-format=byte-stream ! udpsink host=127.0.0.1 port=5004 sync=false async=false "
        << "t. ! queue leaky=downstream max-size-buffers=2 ! videoscale ! videoconvert ! "
