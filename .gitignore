@@ -41,6 +41,24 @@ compile_commands.json
 gst-debug-log*
 gmon.out
 
+# Local docs/notes
+OPTIMIZATIONS.md
+
+# Common editors / OS
+.DS_Store
+._*
+.AppleDouble
+.LSOverride
+**/._*
+.Spotlight-V100
+.Trashes
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.nfs*
+
 # NCNN Models (Optional: exclude if you want users to download them via script)
 # models/*.param
 # models/*.bin
