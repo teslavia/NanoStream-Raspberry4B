@@ -8,7 +8,7 @@
 
 NCNNDetector::NCNNDetector() {
     net.opt.num_threads = 4;
-    net.opt.use_packing_layout = true;
+    net.opt.use_packing_layout = false; // safer for these heads
     worker_thread = std::thread(&NCNNDetector::workerLoop, this);
 }
 
@@ -97,7 +97,7 @@ void NCNNDetector::workerLoop() {
             int cls_ret = ex.extract(h.cls.c_str(), out_cls);
             int reg_ret = ex.extract(h.reg.c_str(), out_reg);
             if (cls_ret != 0 || out_cls.empty() || reg_ret != 0 || out_reg.empty()) {
-                if (frame_id % 30 == 0) {
+                if (frame_id < 3 || frame_id % 30 == 0) {
                     std::cout << "\r[NanoStream] Head " << h.cls << "/" << h.reg
                               << " extract failed (cls=" << cls_ret << ", reg=" << reg_ret << ")    " << std::flush;
                 }
@@ -108,7 +108,7 @@ void NCNNDetector::workerLoop() {
             if (out_reg.c < 4) continue;
             any_head_ok = true;
 
-            if (frame_id % 30 == 0) {
+            if (frame_id < 3 || frame_id % 30 == 0) {
                 std::cout << "\r[NanoStream] Head " << h.cls << ": cls_shape=" << out_cls.w << "x" << out_cls.h << "x" << out_cls.c
                           << " reg_c=" << out_reg.c << "    " << std::flush;
             }
