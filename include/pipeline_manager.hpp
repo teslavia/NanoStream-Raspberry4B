@@ -1,6 +1,7 @@
 #pragma once
 
 #include <gst/gst.h>
+#include <cairo.h>
 #include <string>
 #include "ncnn_detector.hpp"
 
@@ -17,6 +18,9 @@ public:
 
     // Stop the pipeline and release resources
     void stop();
+
+    // OSD Drawing logic
+    void draw_overlay(cairo_t *cr);
 
 private:
     GstElement *pipeline = nullptr;
