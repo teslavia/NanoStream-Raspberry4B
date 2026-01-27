@@ -101,12 +101,53 @@ void NCNNDetector::workerLoop() {
                 std::cout << "\n[Diag] Head " << h.cls << "/" << h.reg
                           << " cls_ret=" << cls_ret << " reg_ret=" << reg_ret
                           << " cls_shape=" << out_cls.w << "x" << out_cls.h << "x" << out_cls.c
-                          << " reg_c=" << out_reg.c
+                          << " reg_shape=" << out_reg.w << "x" << out_reg.h << "x" << out_reg.c
                           << " cls_empty=" << out_cls.empty() << " reg_empty=" << out_reg.empty()
                           << std::endl;
             }
             if (!extracted) continue;
 
+            // Layout handling: NanoDet exported from ncnn-assets yields cls with c==1 and classes folded into w, locations in h.
+            if (out_cls.c == 1 && out_reg.c == 1 && out_reg.w == 4 && out_reg.h == out_cls.h) {
+                // cls: w=classes (80), h=locations
+                int num_cls = out_cls.w;
+                int locations = out_cls.h;
+                // reg: w=4, h=locations
+                any_head_ok = true;
+                for (int loc = 0; loc < locations; ++loc) {
+                    const float* cls_ptr = out_cls.row(loc);
+                    const float* reg_ptr = out_reg.row(loc);
+                    // cls already passed through Sigmoid in the model graph; use raw as prob
+                    float max_score = 0.f;
+                    for (int c = 0; c < num_cls; ++c) max_score = std::max(max_score, cls_ptr[c]);
+                    if (max_score > max_score_all) max_score_all = max_score;
+                    if (max_score <= 0.15f) continue;
+
+                    int gx = loc % (out_cls.h == out_reg.h ? out_cls.h : locations); // approximate grid index
+                    int gy = loc / (out_cls.h == out_reg.h ? out_cls.h : locations);
+                    float l = reg_ptr[0] * h.stride;
+                    float t = reg_ptr[1] * h.stride;
+                    float r = reg_ptr[2] * h.stride;
+                    float b = reg_ptr[3] * h.stride;
+
+                    float scale_x = 640.0f / 320.0f;
+                    float scale_y = 480.0f / 320.0f;
+                    float cx = gx * h.stride;
+                    float cy = gy * h.stride;
+
+                    Detection d;
+                    d.x = (int)((cx - l) * scale_x);
+                    d.y = (int)((cy - t) * scale_y);
+                    d.w = (int)((l + r) * scale_x);
+                    d.h = (int)((t + b) * scale_y);
+                    d.score = max_score;
+                    d.label = "Target";
+                    raw_dets.push_back(d);
+                }
+                continue;
+            }
+
+            // Fallback: original layout
             if (out_cls.w <= 0 || out_cls.h <= 0 || out_cls.c <= 0) continue;
             if (out_reg.c < 4) continue;
             any_head_ok = true;
@@ -121,27 +162,23 @@ void NCNNDetector::workerLoop() {
                     int gx = i % out_cls.w;
                     int gy = i / out_cls.w;
                     
-                    // 真实回归解码 (取 Reg 分支前 4 个通道作为 l,t,r,b 偏移)
                     float l = out_reg.channel(0)[i] * h.stride;
                     float t = out_reg.channel(1)[i] * h.stride;
                     float r = out_reg.channel(2)[i] * h.stride;
                     float b = out_reg.channel(3)[i] * h.stride;
 
-                    Detection d;
-                    // 映射到 640x480 (in 是 320x320)
                     float scale_x = 640.0f / 320.0f;
                     float scale_y = 480.0f / 320.0f;
-                    
                     float cx = gx * h.stride;
                     float cy = gy * h.stride;
-                    
+
+                    Detection d;
                     d.x = (int)((cx - l) * scale_x);
                     d.y = (int)((cy - t) * scale_y);
                     d.w = (int)((l + r) * scale_x);
                     d.h = (int)((t + b) * scale_y);
                     d.score = score;
                     d.label = "Target";
-                    
                     raw_dets.push_back(d);
                 }
             }
