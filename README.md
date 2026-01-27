@@ -22,95 +22,92 @@
 
 ```mermaid
 graph TD
-    %% 定义样式
+    %% Define Styles
     classDef hardware fill:#ffcccb,stroke:#d9534f,stroke-width:2px,color:black;
     classDef gstPipeline fill:#d9edf7,stroke:#5bc0de,stroke-width:2px,color:black;
     classDef cppApp fill:#dff0d8,stroke:#5cb85c,stroke-width:2px,color:black;
     classDef ncnn fill:#c3aed6,stroke:#6f42c1,stroke-width:2px,color:white;
     classDef critical fill:#fffacd,stroke:#f0ad4e,stroke-width:3px,stroke-dasharray: 5 5,color:black;
 
-    subgraph "Raspberry Pi 4B Hardware Layer"
+    subgraph HardwareLayer [Raspberry Pi 4B Hardware Layer]
         Cam[Camera Module<br/>e.g., CSI/USB]:::hardware
         VPU[VideoCore VI VPU<br/>Hardware Encoder]:::hardware
         CPU_Neon[CPU<br/>ARM Cortex-A72 + NEON Intrinsics]:::hardware
     end
 
-    subgraph "User Space: GStreamer Pipeline (Main Thread)"
-        v4l2src[libcamerasrc<br/>Camera Source]:::gstPipeline
-        capsfilter1[capsfilter<br/>720p @ 30FPS, NV12/I420]:::gstPipeline
+    subgraph GstPipeline [User Space: GStreamer Pipeline Main Thread]
+        Source[libcamerasrc<br/>Camera Source]:::gstPipeline
+        Caps[capsfilter<br/>720p @ 30FPS, NV12/I420]:::gstPipeline
         
-        %% 核心分流点
         Tee{Tee<br/>Stream Splitter}:::critical
 
-        %% 分支一：硬件推流
-        subgraph "Branch A: Low-Latency Streaming (Hardware Path)"
+        subgraph BranchA [Branch A: Low-Latency Streaming]
             QueueStream[queue<br/>Buffer for encoding]:::gstPipeline
-            v4l2h264enc[v4l2h264enc<br/>Hardware H.264 Encoder]:::critical
-            h264parse[h264parse]:::gstPipeline
+            Encoder[v4l2h264enc<br/>Hardware H.264 Encoder]:::critical
+            Parse[h264parse]:::gstPipeline
             Mux[rtph264pay<br/>RTP Payloader]:::gstPipeline
-            NetworkSink[udpsink<br/>Internal Bridge]:::gstPipeline
+            Sink[udpsink<br/>Internal Bridge]:::gstPipeline
         end
 
-        %% 分支二：AI 推理准备
-        subgraph "Branch B: AI Inference Path (Asynchronous)"
-            %% 关键点：Leaky Queue
+        subgraph BranchB [Branch B: AI Inference Path]
             QueueAI[queue<br/>leaky=downstream,<br/>max-size-buffers=1]:::critical
-            VideoScale[videoscale<br/>Resize to e.g., 320x320]:::gstPipeline
-            VideoConvert[videoconvert<br/>Convert to RGB format]:::gstPipeline
-            %% 关键点：AppSink
-            AppSink[appsink<br/>Bridge to C++, emit-signals=true]:::critical
+            Scale[videoscale<br/>Resize to 320x320]:::gstPipeline
+            Convert[videoconvert<br/>Convert to RGB]:::gstPipeline
+            AppSink[appsink<br/>Bridge to C++]:::critical
         end
     end
 
-    subgraph "User Space: C++ Application Domain (AI Worker Thread)"
-        GST_Callback[GStreamer Callback Function<br/>on 'new-sample']:::cppApp
+    subgraph CppApp [User Space: C++ Application Domain AI Worker Thread]
+        Callback[GStreamer Callback<br/>on new-sample]:::cppApp
         
-        subgraph "Zero-Copy Optimization"
-            MapBuffer[gst_buffer_map<br/>Get raw data pointer]:::cppApp
-            NEON_Preproc[NEON Optimized Preprocessing<br/>Optional: Normalize/Pack]:::cppApp
+        subgraph ZeroCopy [Zero-Copy Optimization]
+            MapBuffer[gst_buffer_map<br/>Get raw pointer]:::cppApp
+            NEON_Preproc[NEON Preprocessing<br/>Normalize/Pack]:::cppApp
         end
 
-        subgraph "NCNN High-Performance Inference"
+        subgraph NCNNInference [NCNN High-Performance Inference]
             NCNN_Input[NCNN Input Layer<br/>ncnn::Mat::from_pixels]:::ncnn
-            NCNN_INT8[NCNN Model<br/>NanoDet-m / YOLO-FastestV2]:::critical
+            NCNN_INT8[NCNN Model<br/>NanoDet-m / YOLO]:::critical
             NCNN_Output[NCNN Output Layer<br/>Detection Results]:::ncnn
         end
 
-        PostProcess[Post-Processing<br/>NMS, Bounding Box Generation]:::cppApp
-        ResultOutput[Output: JSON Metadata / Console / MQTT]:::cppApp
+        PostProcess[Post-Processing<br/>NMS, Box Gen]:::cppApp
+        ResultOutput[Output: JSON Metadata / MQTT]:::cppApp
     end
 
-    %% 数据流向与硬件交互连接
-    Cam -->|Raw Data| v4l2src
-    v4l2src --> capsfilter1
-    capsfilter1 --> Tee
+    %% Connections
+    Cam -->|Raw Data| Source
+    Source --> Caps
+    Caps --> Tee
 
-    %% 分支一连接
-    Tee -->|Path A: 30 FPS| QueueStream
-    QueueStream --> v4l2h264enc
-    v4l2h264enc -.->|Offload Encoding Task| VPU
-    VPU -.->|Encoded H.264 Data| v4l2h264enc
-    v4l2h264enc --> h264parse --> Mux --> NetworkSink
-    NetworkSink -->|Internal Bridge| Internet(RTSP Server)
+    %% Branch A
+    Tee --> QueueStream
+    QueueStream --> Encoder
+    Encoder -.->|Offload| VPU
+    VPU -.->|Encoded H.264| Encoder
+    Encoder --> Parse
+    Parse --> Mux
+    Mux --> Sink
+    Sink -->|Internal Bridge| Internet(RTSP Server)
 
-    %% 分支二连接
-    Tee -->|Path B: 30 FPS -> ~15 FPS| QueueAI
+    %% Branch B
+    Tee --> QueueAI
+    QueueAI -->|Drop oldest frames| Scale
+    Scale --> Convert
+    Convert --> AppSink
     
-    %% 修复点 1：使用标准管道符语法
-    QueueAI -->|Drop oldest frames if busy| VideoScale
-    
-    VideoScale --> VideoConvert --> AppSink
-    
-    %% C++ 与 NCNN 交互
-    %% 修复点 2：修复粗箭头标签语法
-    AppSink ==>|Signal: new-sample Pointer pass| GST_Callback
-    
-    GST_Callback --> MapBuffer --> NEON_Preproc --> NCNN_Input
+    %% C++ Integration
+    AppSink -->|Signal: new-sample| Callback
+    Callback --> MapBuffer
+    MapBuffer --> NEON_Preproc
+    NEON_Preproc --> NCNN_Input
     NCNN_Input --> NCNN_INT8
-    NCNN_INT8 -.->|SIMD Instructions| CPU_Neon
-    NCNN_INT8 --> NCNN_Output --> PostProcess --> ResultOutput
+    NCNN_INT8 -.->|SIMD| CPU_Neon
+    NCNN_INT8 --> NCNN_Output
+    NCNN_Output --> PostProcess
+    PostProcess --> ResultOutput
 
-    %% 图例说明
+    %% Legends
     style Tee fill:#ffeb3b,stroke:#f0ad4e,stroke-width:4px
 ```
 
