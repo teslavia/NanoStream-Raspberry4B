@@ -69,5 +69,10 @@
 | **P3** | 定制 INT8 量化表 | 2 天 | Low |
 
 ---
+
+## 进展更新（dev 合并）
+- P1 OSD/WebRTC 已落地：cairooverlay 叠加、MediaMTX 旁路模板、本地 WebRTC 播放页兼容 path 与多端点。
+- 检测管线修复与稳定性提升：NanoDet-m 分布式回归解码正确化；阈值/去重/NMS 调优，减少抖动重复框；appsink/OSD 防护。
+- 工程健壮性：禁用 packing layout、完善头部诊断与日志；gitignore 更新。
 **制定人**: opencode
 **日期**: 2026-01-27

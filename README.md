@@ -195,6 +195,12 @@ sh scripts/build.sh
 
 ---
 
+## 📝 本次 dev 合并摘要
+- NanoDet-m 解码修复：支持 1 通道 cls/reg 分布式回归（reg_max=7，4x8 bins），正确输出 bbox。
+- 稳定性提升：阈值上调、近邻去重收紧、候选 cap 限制，减少重复/抖动框；禁用 packing layout，完善头部诊断日志。
+- WebRTC 兼容：本地播放器兼容 path 参数与多端点；MediaMTX 端口避冲突。
+- 安全性：appsink caps/size 防护，OSD 安全绘制；gitignore 更新。
+
 ## 📊 性能指标 (RPi 4B @ 1.5GHz)
 | 模块 | 分辨率 | 负载/延迟 |
 | :--- | :--- | :--- |
