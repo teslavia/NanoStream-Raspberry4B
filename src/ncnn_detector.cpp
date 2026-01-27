@@ -53,6 +53,7 @@ void NCNNDetector::workerLoop() {
     struct State { int x, y, w, h; };
     std::vector<State> history(5, {0,0,0,0});
     const float alpha = 0.3f;
+    uint64_t frame_id = 0;
 
     while (running) {
         std::vector<unsigned char> local_frame;
@@ -72,7 +73,7 @@ void NCNNDetector::workerLoop() {
 
         auto start = std::chrono::high_resolution_clock::now();
         ncnn::Mat in = ncnn::Mat::from_pixels(local_frame.data(), ncnn::Mat::PIXEL_RGB, w, h);
-        const float mean_vals[3] = {103.53f, 116.28f, 123.675f};
+        const float mean_vals[3] = {123.675f, 116.28f, 103.53f};
         const float norm_vals[3] = {0.017429f, 0.017507f, 0.017125f};
         in.substract_mean_normalize(mean_vals, norm_vals);
 
@@ -89,6 +90,7 @@ void NCNNDetector::workerLoop() {
         };
 
         std::vector<Detection> raw_dets;
+        float max_score_all = 0.0f;
         for (const auto& h : heads) {
             ncnn::Mat out_cls, out_reg;
             if (ex.extract(h.cls.c_str(), out_cls) != 0 || out_cls.empty()) continue;
@@ -100,8 +102,9 @@ void NCNNDetector::workerLoop() {
             for (int i = 0; i < out_cls.w * out_cls.h; i++) {
                 float score = 0;
                 for (int c = 0; c < out_cls.c; c++) score = std::max(score, out_cls.channel(c)[i]);
+                if (score > max_score_all) max_score_all = score;
 
-                if (score > 0.30f) {
+                if (score > 0.20f) {
                     int gx = i % out_cls.w;
                     int gy = i / out_cls.w;
                     
@@ -144,11 +147,15 @@ void NCNNDetector::workerLoop() {
         }
 
         auto lat = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start).count();
+        frame_id++;
         if (!final_dets.empty()) {
             std::cout << "\r[NanoStream] Detected: " << final_dets.size() << " | Lat: " << lat << "ms    " << std::flush;
             std::lock_guard<std::mutex> lock(result_mutex);
             current_detections = final_dets;
         } else {
+            if (frame_id % 60 == 0) {
+                std::cout << "\r[NanoStream] MaxScore: " << max_score_all << " | Lat: " << lat << "ms    " << std::flush;
+            }
             std::lock_guard<std::mutex> lock(result_mutex);
             current_detections.clear();
         }
