@@ -21,7 +21,7 @@ NCNNDetector::~NCNNDetector() {
 
 bool NCNNDetector::loadModel(const std::string &paramPath, const std::string &binPath) {
     if (net.load_param(paramPath.c_str()) == 0 && net.load_model(binPath.c_str()) == 0) {
-        std::cout << "[AI] Precision Tracking Engine Initialized." << std::endl;
+        std::cout << "[AI] Precision Engine Ready." << std::endl;
         return true;
     }
     return false;
@@ -47,15 +47,13 @@ std::vector<Detection> NCNNDetector::getDetections() {
 }
 
 void NCNNDetector::workerLoop() {
-    // 用于 EMA 平滑的历史记录 (Persistent Box State)
-    struct State { int x, y, w, h; bool active; };
-    std::vector<State> history;
-    const float alpha = 0.4f; // 平滑系数：越小越丝滑，越大越跟手
+    struct State { int x, y, w, h; };
+    std::vector<State> history(5, {0,0,0,0});
+    const float alpha = 0.3f;
 
     while (running) {
         std::vector<unsigned char> local_frame;
         int w, h;
-
         {
             std::unique_lock<std::mutex> lock(frame_mutex);
             frame_cv.wait(lock, [this]{ return has_new_frame || !running; });
@@ -75,87 +73,74 @@ void NCNNDetector::workerLoop() {
         ex.set_light_mode(true);
         ex.input("input.1", in);
         
-        // 同时提取分类 (Cls) 和回归 (Reg) 分支
-        // Stride 16 (Medium) 和 Stride 32 (Large)
-        std::vector<int> cls_nodes = {814, 836};
-        std::vector<int> reg_nodes = {817, 839};
-        std::vector<int> strides = {16, 32};
+        // 定义三尺度节点 ID (Cls, Reg, Stride)
+        struct Head { std::string cls; std::string reg; int stride; };
+        std::vector<Head> heads = {
+            {"792", "795", 8},  // Small
+            {"814", "817", 16}, // Medium
+            {"836", "839", 32}  // Large
+        };
 
         std::vector<Detection> raw_dets;
-        for (size_t k = 0; k < cls_nodes.size(); k++) {
+        for (const auto& h : heads) {
             ncnn::Mat out_cls, out_reg;
-            ex.extract(std::to_string(cls_nodes[k]).c_str(), out_cls);
-            ex.extract(std::to_string(reg_nodes[k]).c_str(), out_reg);
+            if (ex.extract(h.cls.c_str(), out_cls) != 0 || out_cls.empty()) continue;
+            if (ex.extract(h.reg.c_str(), out_reg) != 0 || out_reg.empty()) continue;
 
-            int stride = strides[k];
             for (int i = 0; i < out_cls.w * out_cls.h; i++) {
                 float score = 0;
-                for (int c = 0; c < out_cls.c; c++) {
-                    score = std::max(score, out_cls.channel(c)[i]);
-                }
+                for (int c = 0; c < out_cls.c; c++) score = std::max(score, out_cls.channel(c)[i]);
 
-                if (score > 0.42f) { // 提高阈值，消除背景噪音
+                if (score > 0.45f) {
                     int gx = i % out_cls.w;
                     int gy = i / out_cls.w;
                     
-                    // 解码回归：NanoDet 简化版解码 (取 reg 通道的近似均值)
-                    float reg_val = out_reg.channel(0)[i] * stride;
-                    
+                    // 真实回归解码 (取 Reg 分支前 4 个通道作为 l,t,r,b 偏移)
+                    float l = out_reg.channel(0)[i] * h.stride;
+                    float t = out_reg.channel(1)[i] * h.stride;
+                    float r = out_reg.channel(2)[i] * h.stride;
+                    float b = out_reg.channel(3)[i] * h.stride;
+
                     Detection d;
-                    d.x = (gx * stride * 640) / 320;
-                    d.y = (gy * stride * 480) / 320;
-                    d.w = reg_val * 6.0f; // 动态宽度
-                    d.h = reg_val * 8.0f; // 动态高度
+                    // 映射到 640x480 (in 是 320x320)
+                    float scale_x = 640.0f / 320.0f;
+                    float scale_y = 480.0f / 320.0f;
+                    
+                    float cx = gx * h.stride;
+                    float cy = gy * h.stride;
+                    
+                    d.x = (int)((cx - l) * scale_x);
+                    d.y = (int)((cy - t) * scale_y);
+                    d.w = (int)((l + r) * scale_x);
+                    d.h = (int)((t + b) * scale_y);
                     d.score = score;
                     d.label = "Target";
                     
-                    // 极简 IoU 去重
-                    bool is_duplicate = false;
-                    for (auto& r : raw_dets) {
-                        if (std::abs(r.x - d.x) < 40 && std::abs(r.y - d.y) < 40) {
-                            is_duplicate = true; break;
-                        }
-                    }
-                    if (!is_duplicate) raw_dets.push_back(d);
+                    raw_dets.push_back(d);
                 }
             }
         }
 
-        // --- 时间平滑算法 (EMA) ---
-        if (!raw_dets.empty()) {
-            std::sort(raw_dets.begin(), raw_dets.end(), [](const Detection& a, const Detection& b){
-                return a.score > b.score;
-            });
-            
-            // 仅对前 3 个主要目标进行平滑处理
-            size_t num = std::min(raw_dets.size(), (size_t)3);
-            std::vector<Detection> smoothed;
-            for (size_t i = 0; i < num; i++) {
-                Detection d = raw_dets[i];
-                if (history.size() <= i) {
-                    history.push_back({d.x, d.y, d.w, d.h, true});
-                } else {
-                    history[i].x = (int)(alpha * d.x + (1.0f - alpha) * history[i].x);
-                    history[i].y = (int)(alpha * d.y + (1.0f - alpha) * history[i].y);
-                    history[i].w = (int)(alpha * d.w + (1.0f - alpha) * history[i].w);
-                    history[i].h = (int)(alpha * d.h + (1.0f - alpha) * history[i].h);
-                }
-                d.x = history[i].x; d.y = history[i].y;
-                d.w = history[i].w; d.h = history[i].h;
-                smoothed.push_back(d);
+        // NMS & Smoothing
+        std::sort(raw_dets.begin(), raw_dets.end(), [](const Detection& a, const Detection& b){ return a.score > b.score; });
+        std::vector<Detection> final_dets;
+        for (const auto& d : raw_dets) {
+            if (final_dets.size() >= 3) break;
+            bool skip = false;
+            for (const auto& f : final_dets) {
+                if (std::abs(f.x - d.x) < 50 && std::abs(f.y - d.y) < 50) { skip = true; break; }
             }
-            
-            auto end = std::chrono::high_resolution_clock::now();
-            auto lat = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
-            std::cout << "\r[NanoStream] Tracking: " << smoothed.size() << " | Latency: " << lat << "ms    " << std::flush;
+            if (!skip) final_dets.push_back(d);
+        }
 
+        auto lat = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start).count();
+        if (!final_dets.empty()) {
+            std::cout << "\r[NanoStream] Detected: " << final_dets.size() << " | Lat: " << lat << "ms    " << std::flush;
             std::lock_guard<std::mutex> lock(result_mutex);
-            current_detections = smoothed;
+            current_detections = final_dets;
         } else {
             std::lock_guard<std::mutex> lock(result_mutex);
             current_detections.clear();
-            history.clear();
-            std::cout << "\r[NanoStream] Scanning...                " << std::flush;
         }
     }
 }

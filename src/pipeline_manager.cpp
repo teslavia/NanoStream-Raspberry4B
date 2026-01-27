@@ -1,6 +1,7 @@
 #include "pipeline_manager.hpp"
 #include <iostream>
 #include <sstream>
+#include <string>
 #include <gst/app/gstappsink.h>
 #include <cairo.h>
 #include <cairo-gobject.h>
@@ -93,12 +94,32 @@ GstFlowReturn PipelineManager::on_new_sample_wrapper(GstElement *sink, gpointer 
 }
 
 GstFlowReturn PipelineManager::on_new_sample(GstElement *sink) {
+    static bool caps_logged = false;
     GstSample *sample;
     g_signal_emit_by_name(sink, "pull-sample", &sample);
     if (sample) {
+        if (!caps_logged) {
+            GstCaps *caps = gst_sample_get_caps(sample);
+            if (caps) {
+                gchar *caps_str = gst_caps_to_string(caps);
+                std::cout << "[Debug] appsink caps: " << caps_str << std::endl;
+                g_free(caps_str);
+                caps_logged = true;
+            }
+        }
+
         GstBuffer *buffer = gst_sample_get_buffer(sample);
         GstMapInfo map;
         if (gst_buffer_map(buffer, &map, GST_MAP_READ)) {
+            const size_t expected_size = static_cast<size_t>(320) * 320 * 3;
+            if (map.size < expected_size) {
+                std::cerr << "[Warning] appsink buffer too small: " << map.size
+                          << " bytes, expected at least " << expected_size << " bytes" << std::endl;
+                gst_buffer_unmap(buffer, &map);
+                gst_sample_unref(sample);
+                return GST_FLOW_OK;
+            }
+
             detector.pushFrame(map.data, 320, 320);
             gst_buffer_unmap(buffer, &map);
         }
