@@ -4,6 +4,7 @@
 #include <cstring>
 #include <vector>
 #include <algorithm>
+#include <cmath>
 
 NCNNDetector::NCNNDetector() {
     net.opt.num_threads = 3;
@@ -20,7 +21,7 @@ NCNNDetector::~NCNNDetector() {
 
 bool NCNNDetector::loadModel(const std::string &paramPath, const std::string &binPath) {
     if (net.load_param(paramPath.c_str()) == 0 && net.load_model(binPath.c_str()) == 0) {
-        std::cout << "[AI] Model loaded. HW Acceleration: Enabled." << std::endl;
+        std::cout << "[AI] Model loaded. Multi-object detection enabled." << std::endl;
         return true;
     }
     return false;
@@ -54,14 +55,12 @@ void NCNNDetector::workerLoop() {
             std::unique_lock<std::mutex> lock(frame_mutex);
             frame_cv.wait(lock, [this]{ return has_new_frame || !running; });
             if (!running) break;
-            
             local_frame = std::move(pending_frame);
             w = img_w; h = img_h;
             has_new_frame = false;
         }
 
         auto start = std::chrono::high_resolution_clock::now();
-        
         ncnn::Mat in = ncnn::Mat::from_pixels(local_frame.data(), ncnn::Mat::PIXEL_RGB, w, h);
         const float mean_vals[3] = {103.53f, 116.28f, 123.675f};
         const float norm_vals[3] = {0.017429f, 0.017507f, 0.017125f};
@@ -71,49 +70,53 @@ void NCNNDetector::workerLoop() {
         ex.set_light_mode(true);
         ex.input("input.1", in);
         
-        ncnn::Mat out;
-        ex.extract("792", out);
+        // 抓取两个不同尺度的输出头
+        ncnn::Mat out1, out2;
+        ex.extract("792", out1); // 小尺度 (对应特征图大，检测小目标)
+        ex.extract("814", out2); // 中尺度 (检测较大型目标如人)
+
+        std::vector<Detection> dets;
+        auto process_head = [&](const ncnn::Mat& m, int stride) {
+            for (int i = 0; i < m.w * m.h; i++) {
+                float score = m[i];
+                if (score > 0.40f) {
+                    int grid_x = i % m.w;
+                    int grid_y = i / m.w;
+                    Detection d;
+                    d.x = (grid_x * 640) / m.w;
+                    d.y = (grid_y * 480) / m.h;
+                    d.w = 120; d.h = 180; // 假定大小
+                    d.score = score;
+                    d.label = "Target";
+
+                    // 简单的空间去重 (Primitive NMS)
+                    bool duplicate = false;
+                    for (const auto& existing : dets) {
+                        if (std::abs(existing.x - d.x) < 50 && std::abs(existing.y - d.y) < 50) {
+                            duplicate = true; break;
+                        }
+                    }
+                    if (!duplicate) dets.push_back(d);
+                }
+            }
+        };
+
+        process_head(out1, 8);
+        process_head(out2, 16);
 
         auto end = std::chrono::high_resolution_clock::now();
         auto lat = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 
-        // 寻找最大得分及其索引
-        float max_score = 0;
-        int max_idx = 0;
-        for (int i = 0; i < out.w * out.h; i++) {
-            if (out[i] > max_score) {
-                max_score = out[i];
-                max_idx = i;
+        // 仅在有重要发现时打印
+        if (!dets.empty()) {
+            static int frame_cnt = 0;
+            if (frame_cnt++ % 10 == 0) {
+                std::cout << "\n[NanoStream] Detected " << dets.size() << " objects | Latency: " << lat << "ms" << std::endl;
             }
+        } else {
+            std::cout << "\r[NanoStream] Tracking...    " << std::flush;
         }
 
-        std::vector<Detection> dets;
-        // 动态阈值判断
-        if (max_score > 0.30f) {
-            // 将网格索引映射回 640x480 坐标
-            // 假设输出特征图大小为 out.w x out.h
-            int grid_x = max_idx % out.w;
-            int grid_y = max_idx / out.w;
-            
-            Detection det;
-            // 粗略映射逻辑：映射到视频画面中心区域
-            det.x = (grid_x * 640) / out.w;
-            det.y = (grid_y * 480) / out.h;
-            det.w = 120; // 假定大小
-            det.h = 160;
-            det.score = max_score;
-            det.label = "Target";
-            dets.push_back(det);
-
-            // 限制日志输出频率，每隔 5 帧打印一次有效检测
-            static int log_counter = 0;
-            if (log_counter++ % 5 == 0) {
-                std::cout << "\n{\"event\": \"detection\", \"score\": " << max_score 
-                          << ", \"x\": " << det.x << ", \"y\": " << det.y << "}" << std::endl;
-            }
-        }
-
-        // 更新结果供 OSD 线程读取
         {
             std::lock_guard<std::mutex> lock(result_mutex);
             current_detections = dets;
