@@ -22,30 +22,96 @@
 
 ```mermaid
 graph TD
-    subgraph "Hardware Layer (RPi 4B)"
-        Cam[Camera] --> VPU[VPU Encoder]
-        NEON[CPU NEON]
+    %% 定义样式
+    classDef hardware fill:#ffcccb,stroke:#d9534f,stroke-width:2px,color:black;
+    classDef gstPipeline fill:#d9edf7,stroke:#5bc0de,stroke-width:2px,color:black;
+    classDef cppApp fill:#dff0d8,stroke:#5cb85c,stroke-width:2px,color:black;
+    classDef ncnn fill:#c3aed6,stroke:#6f42c1,stroke-width:2px,color:white;
+    classDef critical fill:#fffacd,stroke:#f0ad4e,stroke-width:3px,stroke-dasharray: 5 5,color:black;
+
+    subgraph "Raspberry Pi 4B Hardware Layer"
+        Cam[Camera Module<br/>e.g., CSI/USB]:::hardware
+        VPU[VideoCore VI VPU<br/>Hardware Encoder]:::hardware
+        CPU_Neon[CPU<br/>ARM Cortex-A72 + NEON Intrinsics]:::hardware
     end
 
-    subgraph "GStreamer Main Pipeline"
-        Source[libcamerasrc] --> Tee{Stream Splitter}
-        Tee -->|Branch A| Encoder[v4l2h264enc]
-        Tee -->|Branch B| Preproc[videoscale/convert]
-        Encoder --> udpsink
+    subgraph "User Space: GStreamer Pipeline (Main Thread)"
+        v4l2src[libcamerasrc<br/>Camera Source]:::gstPipeline
+        capsfilter1[capsfilter<br/>720p @ 30FPS, NV12/I420]:::gstPipeline
+        
+        %% 核心分流点
+        Tee{Tee<br/>Stream Splitter}:::critical
+
+        %% 分支一：硬件推流
+        subgraph "Branch A: Low-Latency Streaming (Hardware Path)"
+            QueueStream[queue<br/>Buffer for encoding]:::gstPipeline
+            v4l2h264enc[v4l2h264enc<br/>Hardware H.264 Encoder]:::critical
+            h264parse[h264parse]:::gstPipeline
+            Mux[rtph264pay<br/>RTP Payloader]:::gstPipeline
+            NetworkSink[udpsink<br/>Internal Bridge]:::gstPipeline
+        end
+
+        %% 分支二：AI 推理准备
+        subgraph "Branch B: AI Inference Path (Asynchronous)"
+            %% 关键点：Leaky Queue
+            QueueAI[queue<br/>leaky=downstream,<br/>max-size-buffers=1]:::critical
+            VideoScale[videoscale<br/>Resize to e.g., 320x320]:::gstPipeline
+            VideoConvert[videoconvert<br/>Convert to RGB format]:::gstPipeline
+            %% 关键点：AppSink
+            AppSink[appsink<br/>Bridge to C++, emit-signals=true]:::critical
+        end
     end
 
-    subgraph "C++ AI Domain"
-        AppSink[appsink] --> Callback[Callback Wrapper]
-        Callback -->|Async Push| Worker[AI Worker Thread]
-        Worker --> NCNN[NCNN Engine]
-        NCNN --> JSON[JSON Output]
+    subgraph "User Space: C++ Application Domain (AI Worker Thread)"
+        GST_Callback[GStreamer Callback Function<br/>on 'new-sample']:::cppApp
+        
+        subgraph "Zero-Copy Optimization"
+            MapBuffer[gst_buffer_map<br/>Get raw data pointer]:::cppApp
+            NEON_Preproc[NEON Optimized Preprocessing<br/>Optional: Normalize/Pack]:::cppApp
+        end
+
+        subgraph "NCNN High-Performance Inference"
+            NCNN_Input[NCNN Input Layer<br/>ncnn::Mat::from_pixels]:::ncnn
+            NCNN_INT8[NCNN Model<br/>NanoDet-m / YOLO-FastestV2]:::critical
+            NCNN_Output[NCNN Output Layer<br/>Detection Results]:::ncnn
+        end
+
+        PostProcess[Post-Processing<br/>NMS, Bounding Box Generation]:::cppApp
+        ResultOutput[Output: JSON Metadata / Console / MQTT]:::cppApp
     end
 
-    subgraph "Network Service"
-        udpsink -.-> udpsrc
-        udpsrc --> RTSP[GstRTSPServer]
-        RTSP --> Client[Remote VLC/OBS]
-    end
+    %% 数据流向与硬件交互连接
+    Cam -->|Raw Data| v4l2src
+    v4l2src --> capsfilter1
+    capsfilter1 --> Tee
+
+    %% 分支一连接
+    Tee -->|Path A: 30 FPS| QueueStream
+    QueueStream --> v4l2h264enc
+    v4l2h264enc -.->|Offload Encoding Task| VPU
+    VPU -.->|Encoded H.264 Data| v4l2h264enc
+    v4l2h264enc --> h264parse --> Mux --> NetworkSink
+    NetworkSink -->|Internal Bridge| Internet(RTSP Server)
+
+    %% 分支二连接
+    Tee -->|Path B: 30 FPS -> ~15 FPS| QueueAI
+    
+    %% 修复点 1：使用标准管道符语法
+    QueueAI -->|Drop oldest frames if busy| VideoScale
+    
+    VideoScale --> VideoConvert --> AppSink
+    
+    %% C++ 与 NCNN 交互
+    %% 修复点 2：修复粗箭头标签语法
+    AppSink ==>|Signal: new-sample Pointer pass| GST_Callback
+    
+    GST_Callback --> MapBuffer --> NEON_Preproc --> NCNN_Input
+    NCNN_Input --> NCNN_INT8
+    NCNN_INT8 -.->|SIMD Instructions| CPU_Neon
+    NCNN_INT8 --> NCNN_Output --> PostProcess --> ResultOutput
+
+    %% 图例说明
+    style Tee fill:#ffeb3b,stroke:#f0ad4e,stroke-width:4px
 ```
 
 ---
@@ -100,6 +166,25 @@ sh scripts/build.sh
 3. **RTSP 连接秒断**:
    - **起因**: UDP 桥接时没有提供正确的 H.264 Byte-Stream (Annex-B) 头信息。
    - **对策**: 显式指定 `h264parse config-interval=1` 并强制输出 `stream-format=byte-stream`。
+
+---
+
+## 📈 未来改进与优化清单
+
+为了实现更高性能的边缘计算产品，以下功能计划在后续版本中完善：
+
+1. **VPU 硬件链路深度调优**: 
+    - 目前通过 `videoconvert` 规避了内存对齐问题。下一步将探索使用 `v4l2convert` 的硬件缩放/转换能力，或尝试 `dmabuf` 零拷贝直接注入编码器，旨在彻底解放 CPU。
+2. **AI 精度与量化提升**:
+    - 制作针对树莓派 4B 硬件环境的专属 INT8 量化表（PTQ），在保持当前 100ms 左右延迟的前提下进一步提升检测精度。
+3. **可视化叠加 (OSD)**:
+    - 目前检测结果仅以 JSON 形式输出。计划集成 `cairooverlay` 或 `rsvgoverlay`，将 AI 预测框实时绘制并合并到推流中。
+4. **动态负载平衡 (Dynamic FPS)**:
+    - 根据系统实时温度和 CPU 负载，动态调整 AI 推理分支的跳帧策略，确保在极端环境下推流轨道始终满帧。
+5. **多模型适配支持**:
+    - 增加对 YOLO-v8/v10-tiny 的适配，提供不同场景下的推理权重选择。
+6. **WebRTC 支持**:
+    - 探索集成网页端的低延迟播放支持，实现无需客户端软件的实时监控。
 
 ---
 
