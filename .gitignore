@@ -1,0 +1,18 @@
+# C++ Build files
+build/
+bin/
+obj/
+
+# NCNN Models (Optional: exclude if you want users to download them via script)
+# models/*.param
+# models/*.bin
+
+# macOS files
+.DS_Store
+
+# Temporary files
+*.swp
+*.log
+
+# GStreamer debug output
+gst-debug-log*
