@@ -72,8 +72,8 @@ void NCNNDetector::workerLoop() {
         if (local_frame.size() < expected_size) continue;
 
         auto start = std::chrono::high_resolution_clock::now();
-        ncnn::Mat in = ncnn::Mat::from_pixels(local_frame.data(), ncnn::Mat::PIXEL_RGB, w, h);
-        const float mean_vals[3] = {123.675f, 116.28f, 103.53f};
+        ncnn::Mat in = ncnn::Mat::from_pixels(local_frame.data(), ncnn::Mat::PIXEL_BGR, w, h);
+        const float mean_vals[3] = {103.53f, 116.28f, 123.675f};
         const float norm_vals[3] = {0.017429f, 0.017507f, 0.017125f};
         in.substract_mean_normalize(mean_vals, norm_vals);
 
@@ -108,7 +108,7 @@ void NCNNDetector::workerLoop() {
             if (out_reg.c < 4) continue;
             any_head_ok = true;
 
-            if (frame_id < 3) {
+            if (frame_id % 30 == 0) {
                 std::cout << "\r[NanoStream] Head " << h.cls << ": cls_shape=" << out_cls.w << "x" << out_cls.h << "x" << out_cls.c
                           << " reg_c=" << out_reg.c << "    " << std::flush;
             }
