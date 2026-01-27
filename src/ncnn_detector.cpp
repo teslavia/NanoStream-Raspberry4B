@@ -78,17 +78,39 @@ void NCNNDetector::workerLoop() {
 
         // 简化的解码逻辑：找到最大分数的点作为目标中心
         // NanoDet 的实际解码比这复杂得多（需要 Grid 锚点解码），这里为了 OSD 演示做了一个极简近似。
+        // 遍历所有数据找到最大得分 (修复之前的 Channel 0 限制)
         float max_score = 0;
-        int max_index = 0;
-        int feat_w = out.w;
-        int feat_h = out.h;
+        int total_elements = out.w * out.h * out.c;
+        for (int i = 0; i < total_elements; i++) {
+            if (out[i] > max_score) max_score = out[i];
+        }
+
+        std::vector<Detection> dets;
         
-        for (int i = 0; i < feat_w * feat_h; i++) {
-            // 假设 out 是 cls_score 的 feature map
-            if (out[i] > max_score) {
-                max_score = out[i];
-                max_index = i;
-            }
+        // 强制添加一个测试框 (左上角红色 50x50)，用于验证 OSD 链路是否通畅
+        Detection test_box;
+        test_box.x = 20; test_box.y = 20; test_box.w = 50; test_box.h = 50;
+        test_box.label = "TEST";
+        test_box.score = 1.0;
+        dets.push_back(test_box);
+
+        if (max_score > 0.25f) { // 降低阈值到 0.25
+            // 极简近似解码：假设中心位置
+            Detection det;
+            det.x = 200; det.y = 200; det.w = 150; det.h = 200;
+            det.score = max_score;
+            det.label = "Target";
+            dets.push_back(det);
+
+            std::cout << "\n{\"event\": \"detected\", \"confidence\": " << max_score << "}" << std::endl;
+        } else {
+            std::cout << "\r[NanoStream] AI: " << lat << "ms | Status: Idle    " << std::flush;
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(result_mutex);
+            current_detections = dets;
+        }
         }
 
         std::vector<Detection> dets;
