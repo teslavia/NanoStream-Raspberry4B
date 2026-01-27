@@ -91,13 +91,22 @@ void NCNNDetector::workerLoop() {
 
         std::vector<Detection> raw_dets;
         float max_score_all = -1e9f;
+        bool any_head_ok = false;
         for (const auto& h : heads) {
             ncnn::Mat out_cls, out_reg;
-            if (ex.extract(h.cls.c_str(), out_cls) != 0 || out_cls.empty()) continue;
-            if (ex.extract(h.reg.c_str(), out_reg) != 0 || out_reg.empty()) continue;
+            int cls_ret = ex.extract(h.cls.c_str(), out_cls);
+            int reg_ret = ex.extract(h.reg.c_str(), out_reg);
+            if (cls_ret != 0 || out_cls.empty() || reg_ret != 0 || out_reg.empty()) {
+                if (frame_id % 120 == 0) {
+                    std::cout << "\r[NanoStream] Head " << h.cls << "/" << h.reg
+                              << " extract failed (cls=" << cls_ret << ", reg=" << reg_ret << ")    " << std::flush;
+                }
+                continue;
+            }
 
             if (out_cls.w <= 0 || out_cls.h <= 0 || out_cls.c <= 0) continue;
             if (out_reg.c < 4) continue;
+            any_head_ok = true;
 
             for (int i = 0; i < out_cls.w * out_cls.h; i++) {
                 float max_logit = -1e9f;
@@ -155,7 +164,9 @@ void NCNNDetector::workerLoop() {
             current_detections = final_dets;
         } else {
             if (frame_id % 60 == 0) {
-                std::cout << "\r[NanoStream] MaxScore: " << max_score_all << " | Lat: " << lat << "ms    " << std::flush;
+                std::cout << "\r[NanoStream] MaxScore: " << max_score_all
+                          << " | HeadOK: " << (any_head_ok ? "Y" : "N")
+                          << " | Lat: " << lat << "ms    " << std::flush;
             }
             std::lock_guard<std::mutex> lock(result_mutex);
             current_detections.clear();
