@@ -100,5 +100,6 @@
 
 ## P3 实施记录（进行中）
 - INT8 模型开关：`NANOSTREAM_INT8=1` 启用，失败自动回退 FP32。
+- INT8 路径配置：`NANOSTREAM_INT8_PARAM` / `NANOSTREAM_INT8_BIN`。
 **制定人**: mikylee
 **日期**: 2026-01-27
