@@ -13,7 +13,7 @@ public:
     // rtsp_port: Port for RTSP (e.g., 8554)
     // mount_point: URL suffix (e.g., "/live")
     // udp_port: Source UDP port to forward (e.g., 5004)
-    void start(int rtsp_port, const std::string &mount_point, int udp_port);
+    void start(int rtsp_port, const std::string &mount_point, int udp_port, const std::string &host_label);
 
 private:
     GstRTSPServer *server = nullptr;

@@ -1,12 +1,13 @@
 #include <iostream>
-#include <gst/gst.h>
 #include <thread>
 #include <chrono>
 #include <fstream>
 #include <cstdlib>
+#include <gst/gst.h>
 
 #include "pipeline_manager.hpp"
 #include "rtsp_service.hpp"
+#include "runtime_config.hpp"
 
 int main(int argc, char *argv[]) {
     // 1. Initialize GStreamer
@@ -16,8 +17,13 @@ int main(int argc, char *argv[]) {
     // 2. Start RTSP Server (runs in background via GMainLoop context)
     // It listens on 127.0.0.1:5004 for UDP packets from our pipeline
     // Clients connect to rtsp://<PI_IP>:8554/live
+    const RuntimeConfig& runtime = getRuntimeConfig();
+    if (runtime.debug) {
+        std::cout << "[NanoStream] Runtime config:\n" << formatRuntimeConfig(runtime) << std::endl;
+    }
     RTSPServer rtspServer;
-    rtspServer.start(8554, "/live", 5004);
+    std::string rtsp_host = resolveRtspHost(runtime);
+    rtspServer.start(8554, "/live", 5004, rtsp_host);
     
     // 3. Initialize and Start Pipeline
     PipelineManager pipeline;
@@ -30,18 +36,9 @@ int main(int argc, char *argv[]) {
     std::cout << "[NanoStream] Pipeline is RUNNING." << std::endl;
     std::cout << "--------------------------------------------------------" << std::endl;
 
-    const char* thermal_env = std::getenv("NANOSTREAM_THERMAL");
-    if (thermal_env && std::string(thermal_env) == "1") {
+    if (runtime.thermalEnabled) {
         std::thread([&pipeline]() {
-            const char* debug_env = std::getenv("NANOSTREAM_DEBUG");
-            bool debug = (debug_env && std::string(debug_env) == "1");
-
-            int high = 75000;
-            int crit = 80000;
-            int sleep_ms_cfg = 100;
-            if (const char* v = std::getenv("NANOSTREAM_THERMAL_HIGH")) high = std::atoi(v);
-            if (const char* v = std::getenv("NANOSTREAM_THERMAL_CRIT")) crit = std::atoi(v);
-            if (const char* v = std::getenv("NANOSTREAM_THERMAL_SLEEP")) sleep_ms_cfg = std::atoi(v);
+            const RuntimeConfig& cfg = getRuntimeConfig();
 
             int last_mode = -1;
             while (true) {
@@ -53,14 +50,14 @@ int main(int argc, char *argv[]) {
 
                 int sleep_ms = 0;
                 bool paused = false;
-                if (temp_milli >= crit) {
+                if (temp_milli >= cfg.thermalCrit) {
                     paused = true;
-                } else if (temp_milli >= high) {
-                    sleep_ms = sleep_ms_cfg;
+                } else if (temp_milli >= cfg.thermalHigh) {
+                    sleep_ms = cfg.thermalSleepMs;
                 }
 
                 int mode = paused ? 2 : (sleep_ms > 0 ? 1 : 0);
-                if (debug && mode != last_mode) {
+                if (cfg.debug && mode != last_mode) {
                     std::cout << "[Thermal] temp=" << (temp_milli / 1000.0f)
                               << "C, mode=" << mode << std::endl;
                     last_mode = mode;
@@ -71,7 +68,7 @@ int main(int argc, char *argv[]) {
             }
         }).detach();
     }
-    std::cout << ">> RTSP URL: rtsp://192.168.1.48:8554/live" << std::endl;
+    std::cout << ">> RTSP URL: rtsp://" << rtsp_host << ":8554/live" << std::endl;
     std::cout << ">> IMPORTANT: Ensure Pi's firewall is disabled (sudo ufw disable)" << std::endl;
     std::cout << ">> AI Inference: Running asynchronously on NCNN" << std::endl;
     std::cout << "--------------------------------------------------------" << std::endl;
