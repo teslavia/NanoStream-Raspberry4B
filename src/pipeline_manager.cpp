@@ -119,6 +119,12 @@ bool PipelineManager::buildPipeline() {
         }
     }
 
+    if (use_dmabuf) {
+        std::cout << "[NanoStream] DMABUF status: "
+                  << (pipeline ? "active" : "fallback")
+                  << " (set NANOSTREAM_DMABUF=0 to force software)" << std::endl;
+    }
+
     GstElement *osd = gst_bin_get_by_name(GST_BIN(pipeline), "osd");
     if (osd) {
         g_signal_connect(osd, "draw", G_CALLBACK(on_draw_wrapper), this);

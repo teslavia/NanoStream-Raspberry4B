@@ -83,5 +83,16 @@
   - `NANOSTREAM_THERMAL_HIGH` (默认 75000)
   - `NANOSTREAM_THERMAL_CRIT` (默认 80000)
   - `NANOSTREAM_THERMAL_SLEEP` (默认 100)
+- DMABUF 启动反馈：会打印 `DMABUF status: active/fallback` 便于确认是否回退。
+
+## P2 性能对比测试（记录模板）
+- 测试条件：分辨率 640x480 @15fps，环境温度、供电稳定。
+- 对比项：DMABUF=1 vs DMABUF=0。
+- 记录指标：
+  - CPU 占用（top/htop）
+  - AI 延迟（日志 Lat）
+  - 推流稳定性（掉帧/卡顿主观）
+  - 温度（/sys/class/thermal/thermal_zone0/temp）
+  - 编码器报错（dmesg/日志）
 **制定人**: mikylee
 **日期**: 2026-01-27
