@@ -12,6 +12,7 @@ struct Detection {
     int x, y, w, h;
     std::string label;
     float score;
+    int class_id = -1;
 };
 
 class NCNNDetector {

@@ -217,6 +217,7 @@ void NCNNDetector::workerLoop() {
                     } else {
                         d.label = "Target";
                     }
+                    d.class_id = max_idx;
                     if (d.w * d.h < 400) continue;
                     raw_dets.push_back(d);
                 }
@@ -255,6 +256,7 @@ void NCNNDetector::workerLoop() {
                     d.h = (int)((t + b) * scale_y);
                     d.score = score;
                     d.label = "Target";
+                    d.class_id = -1;
                     if (d.w * d.h < 400) continue;
                     raw_dets.push_back(d);
                 }
@@ -264,13 +266,24 @@ void NCNNDetector::workerLoop() {
         // NMS & Smoothing
         std::sort(raw_dets.begin(), raw_dets.end(), [](const Detection& a, const Detection& b){ return a.score > b.score; });
         std::vector<Detection> final_dets;
+        int per_class_count[80] = {0};
+        int person_max = 2;
+        if (const char* v = std::getenv("NANOSTREAM_PERSON_MAX")) {
+            int parsed = std::atoi(v);
+            if (parsed >= 0) person_max = parsed;
+        }
         for (const auto& d : raw_dets) {
             if (final_dets.size() >= 6) break;
+            if (d.class_id == 0 && per_class_count[0] >= person_max) continue;
             bool skip = false;
             for (const auto& f : final_dets) {
-                if (iou(d, f) > 0.5f) { skip = true; break; }
+                if (d.class_id >= 0 && f.class_id >= 0 && d.class_id != f.class_id) continue;
+                if (iou(d, f) > 0.3f) { skip = true; break; }
             }
-            if (!skip) final_dets.push_back(d);
+            if (!skip) {
+                if (d.class_id >= 0 && d.class_id < 80) per_class_count[d.class_id] += 1;
+                final_dets.push_back(d);
+            }
         }
 
         auto lat = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start).count();
