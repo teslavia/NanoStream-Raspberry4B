@@ -201,6 +201,10 @@ sh scripts/build.sh
 - WebRTC 兼容：本地播放器兼容 path 参数与多端点；MediaMTX 端口避冲突。
 - 安全性：appsink caps/size 防护，OSD 安全绘制；gitignore 更新。
 
+## ✅ 本次 dev 更新（新）
+- 稳定性增强：引入 IOU NMS + EMA 平滑，默认仅保留 top1 框，抖动显著降低。
+- P2 零拷贝：新增 `NANOSTREAM_DMABUF=1` 启用 v4l2convert/v4l2h264enc 的 DMABUF 链路。
+
 ## 📊 性能指标 (RPi 4B @ 1.5GHz)
 | 模块 | 分辨率 | 负载/延迟 |
 | :--- | :--- | :--- |
