@@ -44,7 +44,7 @@ graph TD
             QueueStream[queue<br/>Buffer for encoding]:::gstPipeline
             OSD[cairooverlay<br/>OSD Boxes/Labels]:::critical
             SWPath[videoconvert -> x264enc<br/>Software Encode]:::gstPipeline
-            DMABUFPath[v4l2convert -> v4l2h264enc<br/>DMABUF (optional)]:::gstPipeline
+            DMABUFPath[v4l2convert -> v4l2h264enc<br/>DMABUF optional]:::gstPipeline
             Parse[h264parse]:::gstPipeline
             Mux[rtph264pay<br/>RTP Payloader]:::gstPipeline
             Sink[udpsink<br/>Internal Bridge]:::gstPipeline
