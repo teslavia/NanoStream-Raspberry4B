@@ -78,5 +78,5 @@
 ## P2 实施记录（进行中）
 - 新增 DMABUF 零拷贝链路开关：通过 `NANOSTREAM_DMABUF=1` 启用。
 - 推流分支采用 `v4l2convert output-io-mode=dmabuf-import` → `v4l2h264enc output-io-mode=dmabuf-import`，锁定 NV12。
-**制定人**: opencode
+**制定人**: mikylee
 **日期**: 2026-01-27
