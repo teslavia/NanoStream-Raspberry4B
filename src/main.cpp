@@ -33,6 +33,16 @@ int main(int argc, char *argv[]) {
     const char* thermal_env = std::getenv("NANOSTREAM_THERMAL");
     if (thermal_env && std::string(thermal_env) == "1") {
         std::thread([&pipeline]() {
+            const char* debug_env = std::getenv("NANOSTREAM_DEBUG");
+            bool debug = (debug_env && std::string(debug_env) == "1");
+
+            int high = 75000;
+            int crit = 80000;
+            int sleep_ms_cfg = 100;
+            if (const char* v = std::getenv("NANOSTREAM_THERMAL_HIGH")) high = std::atoi(v);
+            if (const char* v = std::getenv("NANOSTREAM_THERMAL_CRIT")) crit = std::atoi(v);
+            if (const char* v = std::getenv("NANOSTREAM_THERMAL_SLEEP")) sleep_ms_cfg = std::atoi(v);
+
             int last_mode = -1;
             while (true) {
                 std::ifstream temp_file("/sys/class/thermal/thermal_zone0/temp");
@@ -43,14 +53,14 @@ int main(int argc, char *argv[]) {
 
                 int sleep_ms = 0;
                 bool paused = false;
-                if (temp_milli >= 80000) {
+                if (temp_milli >= crit) {
                     paused = true;
-                } else if (temp_milli >= 75000) {
-                    sleep_ms = 100;
+                } else if (temp_milli >= high) {
+                    sleep_ms = sleep_ms_cfg;
                 }
 
                 int mode = paused ? 2 : (sleep_ms > 0 ? 1 : 0);
-                if (mode != last_mode) {
+                if (debug && mode != last_mode) {
                     std::cout << "[Thermal] temp=" << (temp_milli / 1000.0f)
                               << "C, mode=" << mode << std::endl;
                     last_mode = mode;

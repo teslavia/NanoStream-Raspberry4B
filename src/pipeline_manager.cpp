@@ -71,23 +71,25 @@ bool PipelineManager::buildPipeline() {
 
     // STABLE ENGINE: x264enc + OSD + 640x480
     // Force BGRx for Cairo OSD, then convert to I420 for encoder
-    if (use_dmabuf) {
-        ss << "libcamerasrc ! video/x-raw,width=640,height=480,framerate=15/1,format=NV12 ! tee name=t "
-           << "t. ! queue max-size-buffers=10 leaky=downstream ! "
-           << "v4l2convert output-io-mode=dmabuf-import ! video/x-raw,format=NV12 ! "
-           << "v4l2h264enc output-io-mode=dmabuf-import bitrate=1000 ! h264parse config-interval=1 ! "
-           << "video/x-h264,stream-format=byte-stream ! udpsink host=127.0.0.1 port=5004 sync=false async=false "
-           << "t. ! queue leaky=downstream max-size-buffers=2 ! videoscale ! videoconvert ! "
-           << "video/x-raw,format=RGB,width=320,height=320 ! appsink name=ncnn_sink sync=false async=false emit-signals=true";
-    } else {
-        ss << "libcamerasrc ! video/x-raw,width=640,height=480,framerate=15/1 ! tee name=t "
-           << "t. ! queue max-size-buffers=10 leaky=downstream ! "
-           << "videoconvert ! video/x-raw,format=BGRx ! cairooverlay name=osd ! videoconvert ! video/x-raw,format=I420 ! "
-           << "x264enc speed-preset=ultrafast tune=zerolatency bitrate=1000 threads=4 ! h264parse config-interval=1 ! "
-           << "video/x-h264,stream-format=byte-stream ! udpsink host=127.0.0.1 port=5004 sync=false async=false "
-           << "t. ! queue leaky=downstream max-size-buffers=2 ! videoscale ! videoconvert ! "
-           << "video/x-raw,format=RGB,width=320,height=320 ! appsink name=ncnn_sink sync=false async=false emit-signals=true";
-    }
+    const std::string dmabuf_pipeline =
+        "libcamerasrc ! video/x-raw,width=640,height=480,framerate=15/1,format=NV12 ! tee name=t "
+        "t. ! queue max-size-buffers=10 leaky=downstream ! "
+        "v4l2convert output-io-mode=dmabuf-import ! video/x-raw,format=NV12 ! "
+        "v4l2h264enc output-io-mode=dmabuf-import bitrate=1000 ! h264parse config-interval=1 ! "
+        "video/x-h264,stream-format=byte-stream ! udpsink host=127.0.0.1 port=5004 sync=false async=false "
+        "t. ! queue leaky=downstream max-size-buffers=2 ! videoscale ! videoconvert ! "
+        "video/x-raw,format=RGB,width=320,height=320 ! appsink name=ncnn_sink sync=false async=false emit-signals=true";
+
+    const std::string software_pipeline =
+        "libcamerasrc ! video/x-raw,width=640,height=480,framerate=15/1 ! tee name=t "
+        "t. ! queue max-size-buffers=10 leaky=downstream ! "
+        "videoconvert ! video/x-raw,format=BGRx ! cairooverlay name=osd ! videoconvert ! video/x-raw,format=I420 ! "
+        "x264enc speed-preset=ultrafast tune=zerolatency bitrate=1000 threads=4 ! h264parse config-interval=1 ! "
+        "video/x-h264,stream-format=byte-stream ! udpsink host=127.0.0.1 port=5004 sync=false async=false "
+        "t. ! queue leaky=downstream max-size-buffers=2 ! videoscale ! videoconvert ! "
+        "video/x-raw,format=RGB,width=320,height=320 ! appsink name=ncnn_sink sync=false async=false emit-signals=true";
+
+    ss << (use_dmabuf ? dmabuf_pipeline : software_pipeline);
 
     if (use_dmabuf) {
         std::cout << "[NanoStream] Launching DMABUF Zero-Copy Pipeline..." << std::endl;
@@ -100,7 +102,21 @@ bool PipelineManager::buildPipeline() {
     if (error) {
         std::cerr << "[Error] " << error->message << std::endl;
         g_error_free(error);
-        return false;
+        if (use_dmabuf) {
+            std::cout << "[NanoStream] DMABUF pipeline failed, falling back to software pipeline." << std::endl;
+            ss.str("");
+            ss.clear();
+            ss << software_pipeline;
+            error = nullptr;
+            pipeline = gst_parse_launch(ss.str().c_str(), &error);
+            if (error) {
+                std::cerr << "[Error] " << error->message << std::endl;
+                g_error_free(error);
+                return false;
+            }
+        } else {
+            return false;
+        }
     }
 
     GstElement *osd = gst_bin_get_by_name(GST_BIN(pipeline), "osd");
