@@ -84,6 +84,7 @@
   - `NANOSTREAM_THERMAL_CRIT` (默认 80000)
   - `NANOSTREAM_THERMAL_SLEEP` (默认 100)
 - DMABUF 启动反馈：会打印 `DMABUF status: active/fallback` 便于确认是否回退。
+- 若平台不支持 DMABUF，会生成 `~/.nanostream_dmabuf_disabled`，后续启动自动回退到软件管线。
 
 ## P2 性能对比测试（记录模板）
 - 测试条件：分辨率 640x480 @15fps，环境温度、供电稳定。

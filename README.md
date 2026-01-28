@@ -205,7 +205,8 @@ sh scripts/build.sh
 - 稳定性增强：引入 IOU NMS + EMA 平滑，默认仅保留 top1 框，抖动显著降低。
 - P2 零拷贝：新增 `NANOSTREAM_DMABUF=1` 启用 v4l2convert/v4l2h264enc 的 DMABUF 链路。
 - P2 温控降频：`NANOSTREAM_THERMAL=1` 启用；阈值可通过 `NANOSTREAM_THERMAL_HIGH/CRIT/SLEEP` 配置。
- - DMABUF 回退提示：启动时会输出 DMABUF 状态（active/fallback）。
+- DMABUF 回退提示：启动时会输出 DMABUF 状态（active/fallback）。
+- DMABUF 禁用标记：若平台不支持，生成 `~/.nanostream_dmabuf_disabled`，后续自动走软件管线。
 
 ## 📊 性能指标 (RPi 4B @ 1.5GHz)
 | 模块 | 分辨率 | 负载/延迟 |
