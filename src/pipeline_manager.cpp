@@ -79,6 +79,7 @@ gboolean PipelineManager::on_bus_message(GstBus *bus, GstMessage *message, gpoin
             std::cout << "[NanoStream] DMABUF runtime failure detected, switching to software pipeline." << std::endl;
             self->dmabuf_active = false;
             self->dmabuf_disabled = true;
+            std::cout << "[NanoStream] DMABUF disabled on this platform. Use NANOSTREAM_DMABUF=0." << std::endl;
             self->rebuildSoftwarePipeline();
         }
     }
@@ -99,7 +100,7 @@ bool PipelineManager::buildPipeline() {
     use_dmabuf_config = use_dmabuf;
     dmabuf_direct_tried = false;
     if (use_dmabuf && dmabuf_disabled) {
-        std::cout << "[NanoStream] DMABUF disabled due to previous failure, using software pipeline." << std::endl;
+        std::cout << "[NanoStream] DMABUF disabled on this platform, using software pipeline." << std::endl;
         use_dmabuf = false;
     }
     return buildPipelineInternal(use_dmabuf, false);
