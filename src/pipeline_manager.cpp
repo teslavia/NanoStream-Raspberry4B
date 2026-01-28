@@ -3,6 +3,7 @@
 #include <sstream>
 #include <string>
 #include <algorithm>
+#include <cstdlib>
 #include <gst/app/gstappsink.h>
 #include <cairo.h>
 #include <cairo-gobject.h>
@@ -61,17 +62,34 @@ static void on_draw_wrapper(GstElement *overlay, cairo_t *cr, guint64 timestamp,
 bool PipelineManager::buildPipeline() {
     std::stringstream ss;
 
+    const char* dmabuf_env = std::getenv("NANOSTREAM_DMABUF");
+    bool use_dmabuf = (dmabuf_env && std::string(dmabuf_env) == "1");
+
     // STABLE ENGINE: x264enc + OSD + 640x480
     // Force BGRx for Cairo OSD, then convert to I420 for encoder
-    ss << "libcamerasrc ! video/x-raw,width=640,height=480,framerate=15/1 ! tee name=t "
-       << "t. ! queue max-size-buffers=10 leaky=downstream ! "
-       << "videoconvert ! video/x-raw,format=BGRx ! cairooverlay name=osd ! videoconvert ! video/x-raw,format=I420 ! "
-       << "x264enc speed-preset=ultrafast tune=zerolatency bitrate=1000 threads=4 ! h264parse config-interval=1 ! "
-       << "video/x-h264,stream-format=byte-stream ! udpsink host=127.0.0.1 port=5004 sync=false async=false "
-       << "t. ! queue leaky=downstream max-size-buffers=2 ! videoscale ! videoconvert ! "
-       << "video/x-raw,format=RGB,width=320,height=320 ! appsink name=ncnn_sink sync=false async=false emit-signals=true";
+    if (use_dmabuf) {
+        ss << "libcamerasrc ! video/x-raw,width=640,height=480,framerate=15/1,format=NV12 ! tee name=t "
+           << "t. ! queue max-size-buffers=10 leaky=downstream ! "
+           << "v4l2convert output-io-mode=dmabuf-import ! video/x-raw,format=NV12 ! "
+           << "v4l2h264enc output-io-mode=dmabuf-import bitrate=1000 ! h264parse config-interval=1 ! "
+           << "video/x-h264,stream-format=byte-stream ! udpsink host=127.0.0.1 port=5004 sync=false async=false "
+           << "t. ! queue leaky=downstream max-size-buffers=2 ! videoscale ! videoconvert ! "
+           << "video/x-raw,format=RGB,width=320,height=320 ! appsink name=ncnn_sink sync=false async=false emit-signals=true";
+    } else {
+        ss << "libcamerasrc ! video/x-raw,width=640,height=480,framerate=15/1 ! tee name=t "
+           << "t. ! queue max-size-buffers=10 leaky=downstream ! "
+           << "videoconvert ! video/x-raw,format=BGRx ! cairooverlay name=osd ! videoconvert ! video/x-raw,format=I420 ! "
+           << "x264enc speed-preset=ultrafast tune=zerolatency bitrate=1000 threads=4 ! h264parse config-interval=1 ! "
+           << "video/x-h264,stream-format=byte-stream ! udpsink host=127.0.0.1 port=5004 sync=false async=false "
+           << "t. ! queue leaky=downstream max-size-buffers=2 ! videoscale ! videoconvert ! "
+           << "video/x-raw,format=RGB,width=320,height=320 ! appsink name=ncnn_sink sync=false async=false emit-signals=true";
+    }
 
-    std::cout << "[NanoStream] Launching Stabilized OSD Engine (Software)..." << std::endl;
+    if (use_dmabuf) {
+        std::cout << "[NanoStream] Launching DMABUF Zero-Copy Pipeline..." << std::endl;
+    } else {
+        std::cout << "[NanoStream] Launching Stabilized OSD Engine (Software)..." << std::endl;
+    }
 
     GError *error = nullptr;
     pipeline = gst_parse_launch(ss.str().c_str(), &error);

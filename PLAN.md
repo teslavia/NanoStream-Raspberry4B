@@ -74,5 +74,9 @@
 - P1 OSD/WebRTC 已落地：cairooverlay 叠加、MediaMTX 旁路模板、本地 WebRTC 播放页兼容 path 与多端点。
 - 检测管线修复与稳定性提升：NanoDet-m 分布式回归解码正确化；阈值/去重/NMS 调优，减少抖动重复框；appsink/OSD 防护。
 - 工程健壮性：禁用 packing layout、完善头部诊断与日志；gitignore 更新。
+
+## P2 实施记录（进行中）
+- 新增 DMABUF 零拷贝链路开关：通过 `NANOSTREAM_DMABUF=1` 启用。
+- 推流分支采用 `v4l2convert output-io-mode=dmabuf-import` → `v4l2h264enc output-io-mode=dmabuf-import`，锁定 NV12。
 **制定人**: opencode
 **日期**: 2026-01-27
