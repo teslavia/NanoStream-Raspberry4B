@@ -50,4 +50,5 @@ private:
     // Detection results
     std::mutex result_mutex;
     std::vector<Detection> current_detections;
+    std::vector<Detection> prev_detections;
 };

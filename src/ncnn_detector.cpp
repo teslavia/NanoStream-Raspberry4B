@@ -55,10 +55,7 @@ void NCNNDetector::setThrottle(int sleep_ms, bool is_paused) {
 }
 
 void NCNNDetector::workerLoop() {
-    struct State { float x, y, w, h; };
-    State ema{0,0,0,0};
-    bool ema_init = false;
-    const float alpha = 0.65f;
+    const float alpha = 0.6f;
     uint64_t frame_id = 0;
 
     static const char* kCoco80[] = {
@@ -359,23 +356,31 @@ void NCNNDetector::workerLoop() {
         auto lat = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start).count();
         frame_id++;
         if (!final_dets.empty()) {
-            // EMA smoothing on top-1
-            if (!ema_init) {
-                ema = { (float)final_dets[0].x, (float)final_dets[0].y, (float)final_dets[0].w, (float)final_dets[0].h };
-                ema_init = true;
-            } else {
-                ema.x = alpha * final_dets[0].x + (1.0f - alpha) * ema.x;
-                ema.y = alpha * final_dets[0].y + (1.0f - alpha) * ema.y;
-                ema.w = alpha * final_dets[0].w + (1.0f - alpha) * ema.w;
-                ema.h = alpha * final_dets[0].h + (1.0f - alpha) * ema.h;
+            // Multi-target EMA smoothing with IOU association
+            std::vector<Detection> smoothed;
+            smoothed.reserve(final_dets.size());
+            for (const auto& cur : final_dets) {
+                const Detection* best = nullptr;
+                float best_iou = 0.0f;
+                for (const auto& prev : prev_detections) {
+                    if (cur.class_id >= 0 && prev.class_id >= 0 && cur.class_id != prev.class_id) continue;
+                    float v = iou(cur, prev);
+                    if (v > best_iou) { best_iou = v; best = &prev; }
+                }
+                Detection d = cur;
+                if (best && best_iou >= 0.3f) {
+                    d.x = (int)(alpha * cur.x + (1.0f - alpha) * best->x);
+                    d.y = (int)(alpha * cur.y + (1.0f - alpha) * best->y);
+                    d.w = (int)(alpha * cur.w + (1.0f - alpha) * best->w);
+                    d.h = (int)(alpha * cur.h + (1.0f - alpha) * best->h);
+                }
+                smoothed.push_back(d);
             }
-            final_dets[0].x = (int)ema.x;
-            final_dets[0].y = (int)ema.y;
-            final_dets[0].w = (int)ema.w;
-            final_dets[0].h = (int)ema.h;
+            final_dets.swap(smoothed);
             std::cout << "\r[NanoStream] Detected: " << final_dets.size() << " | Lat: " << lat << "ms    " << std::flush;
             std::lock_guard<std::mutex> lock(result_mutex);
             current_detections = final_dets;
+            prev_detections = final_dets;
         } else {
             if (debug && frame_id % 60 == 0) {
                 std::cout << "\r[NanoStream] MaxScore: " << max_score_all
@@ -384,6 +389,7 @@ void NCNNDetector::workerLoop() {
             }
             std::lock_guard<std::mutex> lock(result_mutex);
             current_detections.clear();
+            prev_detections.clear();
         }
     }
 }
