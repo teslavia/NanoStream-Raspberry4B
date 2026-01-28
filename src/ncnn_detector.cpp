@@ -189,7 +189,7 @@ void NCNNDetector::workerLoop() {
                         if (cls_ptr[c] > max_score) { max_score = cls_ptr[c]; max_idx = c; }
                     }
                     if (max_score > max_score_all) max_score_all = max_score;
-                    if (max_score <= 0.35f) continue;
+                    if (max_score <= 0.45f) continue;
                     if (kept++ > topk) continue;
 
                     int gx = loc % feat_w;
@@ -217,6 +217,7 @@ void NCNNDetector::workerLoop() {
                     } else {
                         d.label = "Target";
                     }
+                    if (d.w * d.h < 900) continue;
                     raw_dets.push_back(d);
                 }
                 continue;
@@ -233,7 +234,7 @@ void NCNNDetector::workerLoop() {
                 float score = 1.0f / (1.0f + std::exp(-max_logit));
                 if (score > max_score_all) max_score_all = score;
 
-                if (score > 0.35f) {
+                if (score > 0.45f) {
                     int gx = i % out_cls.w;
                     int gy = i / out_cls.w;
                     
@@ -254,6 +255,7 @@ void NCNNDetector::workerLoop() {
                     d.h = (int)((t + b) * scale_y);
                     d.score = score;
                     d.label = "Target";
+                    if (d.w * d.h < 900) continue;
                     raw_dets.push_back(d);
                 }
             }
