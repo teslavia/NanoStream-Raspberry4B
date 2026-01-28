@@ -26,8 +26,9 @@ public:
     void setAIThrottle(int sleep_ms, bool paused);
 
 private:
-    bool buildPipelineInternal(bool use_dmabuf);
+    bool buildPipelineInternal(bool use_dmabuf, bool use_direct);
     void rebuildSoftwarePipeline();
+    void rebuildDmabufDirectPipeline();
 
     GstElement *pipeline = nullptr;
     GstElement *app_sink = nullptr;
@@ -37,6 +38,7 @@ private:
     bool use_dmabuf_config = false;
     bool dmabuf_active = false;
     bool dmabuf_disabled = false;
+    bool dmabuf_direct_tried = false;
 
     // Static callback wrapper for GStreamer C API
     static GstFlowReturn on_new_sample_wrapper(GstElement *sink, gpointer user_data);

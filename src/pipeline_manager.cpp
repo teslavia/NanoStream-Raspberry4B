@@ -71,10 +71,16 @@ gboolean PipelineManager::on_bus_message(GstBus *bus, GstMessage *message, gpoin
         if (debug) {
             std::cout << "[NanoStream] DMABUF error from " << src_name << ": " << msg << std::endl;
         }
-        std::cout << "[NanoStream] DMABUF runtime failure detected, switching to software pipeline." << std::endl;
-        self->dmabuf_active = false;
-        self->dmabuf_disabled = true;
-        self->rebuildSoftwarePipeline();
+        if (!self->dmabuf_direct_tried) {
+            std::cout << "[NanoStream] DMABUF runtime failure detected, switching to direct DMABUF pipeline." << std::endl;
+            self->dmabuf_direct_tried = true;
+            self->rebuildDmabufDirectPipeline();
+        } else {
+            std::cout << "[NanoStream] DMABUF runtime failure detected, switching to software pipeline." << std::endl;
+            self->dmabuf_active = false;
+            self->dmabuf_disabled = true;
+            self->rebuildSoftwarePipeline();
+        }
     }
     return TRUE;
 }
@@ -91,14 +97,15 @@ bool PipelineManager::buildPipeline() {
     const char* dmabuf_env = std::getenv("NANOSTREAM_DMABUF");
     bool use_dmabuf = (dmabuf_env && std::string(dmabuf_env) == "1");
     use_dmabuf_config = use_dmabuf;
+    dmabuf_direct_tried = false;
     if (use_dmabuf && dmabuf_disabled) {
         std::cout << "[NanoStream] DMABUF disabled due to previous failure, using software pipeline." << std::endl;
         use_dmabuf = false;
     }
-    return buildPipelineInternal(use_dmabuf);
+    return buildPipelineInternal(use_dmabuf, false);
 }
 
-bool PipelineManager::buildPipelineInternal(bool use_dmabuf) {
+bool PipelineManager::buildPipelineInternal(bool use_dmabuf, bool use_direct) {
     std::stringstream ss;
 
     // STABLE ENGINE: x264enc + OSD + 640x480
@@ -129,9 +136,17 @@ bool PipelineManager::buildPipelineInternal(bool use_dmabuf) {
         "t. ! queue leaky=downstream max-size-buffers=2 ! videoscale ! videoconvert ! "
         "video/x-raw,format=RGB,width=320,height=320 ! appsink name=ncnn_sink sync=false async=false emit-signals=true";
 
-    ss << (use_dmabuf ? dmabuf_pipeline : software_pipeline);
+    if (use_dmabuf && use_direct) {
+        ss << dmabuf_direct_pipeline;
+    } else if (use_dmabuf) {
+        ss << dmabuf_pipeline;
+    } else {
+        ss << software_pipeline;
+    }
 
-    if (use_dmabuf) {
+    if (use_dmabuf && use_direct) {
+        std::cout << "[NanoStream] Launching DMABUF Direct Pipeline..." << std::endl;
+    } else if (use_dmabuf) {
         std::cout << "[NanoStream] Launching DMABUF Zero-Copy Pipeline..." << std::endl;
     } else {
         std::cout << "[NanoStream] Launching Stabilized OSD Engine (Software)..." << std::endl;
@@ -140,21 +155,14 @@ bool PipelineManager::buildPipelineInternal(bool use_dmabuf) {
     GError *error = nullptr;
     bool dmabuf_fallback = false;
     pipeline = gst_parse_launch(ss.str().c_str(), &error);
-    if (error && use_dmabuf) {
-        std::cerr << "[Error] " << error->message << std::endl;
-        g_error_free(error);
-        std::cout << "[NanoStream] DMABUF pipeline failed, trying direct DMABUF pipeline." << std::endl;
-        ss.str("");
-        ss.clear();
-        ss << dmabuf_direct_pipeline;
-        error = nullptr;
-        pipeline = gst_parse_launch(ss.str().c_str(), &error);
-    }
-
     if (error) {
         std::cerr << "[Error] " << error->message << std::endl;
         g_error_free(error);
-        if (use_dmabuf) {
+        if (use_dmabuf && !use_direct) {
+            std::cout << "[NanoStream] DMABUF pipeline failed, trying direct DMABUF pipeline." << std::endl;
+            return buildPipelineInternal(true, true);
+        }
+        if (use_dmabuf && use_direct) {
             std::cout << "[NanoStream] DMABUF pipeline failed, falling back to software pipeline." << std::endl;
             dmabuf_fallback = true;
             dmabuf_disabled = true;
@@ -168,15 +176,13 @@ bool PipelineManager::buildPipelineInternal(bool use_dmabuf) {
                 g_error_free(error);
                 return false;
             }
-        } else {
-            return false;
         }
     }
 
     dmabuf_active = use_dmabuf && !dmabuf_fallback;
     if (use_dmabuf) {
         std::cout << "[NanoStream] DMABUF status: "
-                  << (dmabuf_fallback ? "fallback" : "active")
+                  << (dmabuf_fallback ? "fallback" : (use_direct ? "active-direct" : "active"))
                   << " (set NANOSTREAM_DMABUF=0 to force software)" << std::endl;
     }
 
@@ -210,7 +216,22 @@ void PipelineManager::rebuildSoftwarePipeline() {
         pipeline = nullptr;
     }
 
-    buildPipelineInternal(false);
+    buildPipelineInternal(false, false);
+    start();
+}
+
+void PipelineManager::rebuildDmabufDirectPipeline() {
+    if (pipeline) {
+        gst_element_set_state(pipeline, GST_STATE_NULL);
+        if (bus) {
+            gst_object_unref(bus);
+            bus = nullptr;
+        }
+        gst_object_unref(pipeline);
+        pipeline = nullptr;
+    }
+
+    buildPipelineInternal(true, true);
     start();
 }
 
