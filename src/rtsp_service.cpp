@@ -1,13 +1,15 @@
 #include "rtsp_service.hpp"
 #include <iostream>
 
+#include "runtime_config.hpp"
+
 RTSPServer::RTSPServer() {}
 
 RTSPServer::~RTSPServer() {
     if (server) g_object_unref(server);
 }
 
-void RTSPServer::start(int rtsp_port, const std::string &mount_point, int udp_port) {
+void RTSPServer::start(int rtsp_port, const std::string &mount_point, int udp_port, const std::string &host_label) {
     server = gst_rtsp_server_new();
     gst_rtsp_server_set_service(server, std::to_string(rtsp_port).c_str());
 
@@ -28,6 +30,7 @@ void RTSPServer::start(int rtsp_port, const std::string &mount_point, int udp_po
     g_object_unref(mounts);
 
     source_id = gst_rtsp_server_attach(server, NULL);
-    std::cout << "[RTSP] Gateway active at rtsp://192.168.1.48:" << rtsp_port << mount_point << std::endl;
+    std::string host = host_label.empty() ? resolveRtspHost(getRuntimeConfig()) : host_label;
+    std::cout << "[RTSP] Gateway active at rtsp://" << host << ":" << rtsp_port << mount_point << std::endl;
     std::cout << "[RTSP] Ensure you are using VLC with 'RTP over RTSP (TCP)' enabled if UDP fails." << std::endl;
 }

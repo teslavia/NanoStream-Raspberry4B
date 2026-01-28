@@ -50,7 +50,11 @@ set(SOURCES
     src/main.cpp
     src/pipeline_manager.cpp
     src/ncnn_detector.cpp
+    src/ncnn_detector_decode.cpp
+    src/ncnn_detector_postprocess.cpp
     src/rtsp_service.cpp
+    src/net_util.cpp
+    src/runtime_config.cpp
 )
 
 add_executable(NanoStream ${SOURCES})

@@ -1,79 +1,141 @@
 # Developer Agent Guide: NanoStream
 
-This guide provides essential information for AI agents and developers working on the NanoStream project, a high-performance asynchronous real-time detection system based on GStreamer and NCNN for Raspberry Pi 4B.
+This guide is for agentic coding assistants working in this repository.
+It summarizes how to build/run, where to look, and the local style rules.
 
-## 🛠 Build and Development
+## Sources of Truth
+- README: project overview and build/run scripts.
+- scripts/build.sh: standard build entry point.
+- CMakeLists.txt: build flags and dependencies.
+- No Cursor or Copilot rules found in this repo.
 
-### Build Commands
-The project uses CMake. A helper script is provided for standard builds.
-- **Full Build**: `sh scripts/build.sh`
-- **Manual Build**:
-  ```bash
-  mkdir -p build && cd build
-  cmake ..
-  make -j$(nproc)
-  ```
+## Build, Lint, Test
 
-### Run Commands
-- **Main Application**: `./build/NanoStream`
-- **RTSP Access**: Connect to `rtsp://<device-ip>:8554/live`
+### Build (preferred)
+- Full build: `sh scripts/build.sh`
+- Output binary: `./build/NanoStream`
 
-### Linting and Testing
-Currently, the project does not have an integrated testing framework (like GTest) or automated linting.
-- **Verification**: Manually verify pipeline state and AI output in the console.
-- **Note**: When adding new features, prefer adding unit tests for pure logic components in a `tests/` directory.
+### Build (manual)
+```
+mkdir -p build
+cd build
+cmake ..
+make -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
+```
 
----
+### Run
+- Main app: `./build/NanoStream`
+- RTSP stream: `rtsp://<device-ip>:8554/live`
 
-## 🎨 Code Style Guidelines
+### Dependencies (RPi target)
+- System deps are documented in `README.md`.
+- NCNN is built via `scripts/install_ncnn.sh`.
+- Models are downloaded via `scripts/download_models.sh`.
 
-### General Conventions
-- **Language**: C++17
-- **Naming**:
-  - **Classes**: `PascalCase` (e.g., `PipelineManager`)
-  - **Methods/Functions**: `camelCase` (e.g., `buildPipeline`)
-  - **Variables**: `snake_case` or `camelCase` (consistent with local context).
-  - **Constants/Macros**: `SCREAMING_SNAKE_CASE` (e.g., `MAX_BUFFERS`)
-- **Headers**: Use `#pragma once` for header guards.
+### Linting
+- No automated linting configured.
+- Keep formatting consistent; do not reformat unrelated code.
 
-### Imports and Includes
-- Header order: Standard libraries, GStreamer headers, NCNN headers, Local headers.
-- Use absolute paths relative to `include/` for local headers.
+### Tests
+- No automated tests configured (no CTest or GTest in tree).
+- If you add tests, wire them into CMake + CTest.
+- Single test (when CTest is added): `ctest -R <test_name> --output-on-failure`
+
+## Project Structure
+- `src/`: C++ sources (`main.cpp`, `pipeline_manager.cpp`, `ncnn_detector.cpp`, `rtsp_service.cpp`).
+- `include/`: public headers; use `#pragma once`.
+- `scripts/`: build + setup scripts.
+- `docs/` and `deploy/`: project docs and deployment artifacts.
+
+## Code Style Guidelines
+
+### Language and Standards
+- C++17 (`CMakeLists.txt` sets `CMAKE_CXX_STANDARD 17`).
+- Prefer standard library types and RAII.
+
+### Naming
+- Classes/structs: `PascalCase`.
+- Methods/functions: `camelCase`.
+- Variables: `camelCase` or `snake_case` (stay consistent within a file).
+- Constants/macros: `SCREAMING_SNAKE_CASE`.
+
+### Includes
+- Order: standard library, GStreamer headers, Cairo/NCNN, local headers.
+- Local headers use project-relative includes (from `include/`).
 
 ### Formatting
-- **Indentation**: 4 spaces.
-- **Braces**: K&R style (braces on the same line as the statement).
-- **Line Length**: Aim for < 100 characters.
+- Indentation: 4 spaces.
+- Braces: K&R style.
+- Line length: aim for < 100 chars.
 
-### Types and Safety
-- Prefer `std::vector` and `std::string` over raw arrays and `char*`.
-- Use `std::unique_ptr` or `std::shared_ptr` for memory management where GStreamer doesn't already manage the lifecycle.
-- **GStreamer Objects**: Always use `gst_object_unref()` or `gst_buffer_unref()` for ref-counted objects when ownership is transferred to you.
+### Types and Ownership
+- Prefer `std::vector`/`std::string` over raw arrays and `char*`.
+- Use `std::unique_ptr`/`std::shared_ptr` when owning heap memory.
+- GStreamer objects are ref-counted: unref explicitly when ownership is yours.
+- Avoid hidden ownership transfers; document when ownership changes.
 
-### Error Handling
-- Use boolean return values for complex initialization (e.g., `bool loadModel(...)`).
-- Log errors to `std::cerr` with a prefix: `[Fatal]`, `[Error]`, or `[Warning]`.
-- For AI-specific logs, use `[AI]`.
+### Error Handling and Logging
+- Use `bool` return values for init steps (e.g., `buildPipeline`).
+- Log errors to `std::cerr` with prefixes: `[Fatal]`, `[Error]`, `[Warning]`.
+- AI-specific logs use `[AI]`.
+- Avoid silent failures and empty `catch` blocks.
 
----
+## Build System Notes
+- NCNN is hardcoded at `/usr/local/include/ncnn` and `/usr/local/lib/libncnn.a`.
+- OpenMP is required; CMake will fail if missing.
+- On non-ARM hosts, dependencies must be installed locally.
 
-## 🏗 Project Architecture & Patterns
+## Runtime Behavior and Patterns
 
-### Asynchronous AI Path
-The project implements a "leaky" AI path to prevent inference latency from blocking the stream:
-1. **Branch A (Streaming)**: Direct hardware encoding (`v4l2h264enc`) -> RTSP.
-2. **Branch B (AI)**: `appsink` with `drop=true` and `max-buffers=1`.
-- **Worker Thread**: Inference runs in a dedicated thread (`NCNNDetector::workerLoop`) using a mutex/condition_variable pattern.
+### Pipeline Architecture
+- Two-branch GStreamer pipeline: streaming branch and AI branch.
+- AI branch uses `appsink` with `drop=true` and `max-buffers=1`.
+- Set `async=false` on sinks to avoid multi-branch preroll deadlocks.
+- Always use explicit caps filters (format/resolution/fps) between elements.
 
-### GStreamer Pipeline Tips
-- **Caps Filtering**: Always specify caps (resolution, format, framerate) between elements to ensure hardware acceleration works correctly.
-- **Zero-Copy**: Use `gst_buffer_map` to access raw data from `appsink` samples.
-- **Async Sinks**: Set `async=false` on sinks to prevent pipeline preroll deadlocks in multi-branch setups.
+### Buffer Handling
+- Map buffers with `gst_buffer_map` to access raw data.
+- Unmap and unref buffers as soon as possible.
+- If DMABUF alignment fails, insert `videoconvert` to force system memory.
 
----
+### RTSP and H.264
+- Use `h264parse` with `config-interval=1` and `stream-format=byte-stream`.
+- RTSP server bridges UDP on port 5004 and exposes port 8554.
 
-## ⚠️ Common Pitfalls (Troubleshooting)
+### Threading
+- Inference runs on a dedicated worker thread.
+- Avoid blocking the main GStreamer thread.
 
-1. **Memory Alignment**: If `libcamerasrc` fails to link to `v4l2h264enc`, insert a `videoconvert` element to force memory copy/realignment.
-2. **NCNN Paths**: NCNN paths are currently hardcoded in `CMakeLists.txt` to `/usr/local/include/ncnn`. Ensure `scripts/install_ncnn.sh` has been run.
-3. **Firewall**: Ensure port 8554 (RTSP) and 5004 (RTP/UDP) are open.
+### Common Pitfalls
+- Pipeline preroll deadlock: ensure sinks set `async=false`.
+- RTSP disconnects: confirm `h264parse` uses Annex-B byte-stream.
+- DMABUF alignment failures: add `videoconvert` to force system memory.
+- Host builds: install GStreamer, Cairo, and NCNN locally or CMake fails.
+
+### Logging Conventions
+- Startup logs use `[NanoStream]` and should be concise.
+- Fatal exit paths should print `[Fatal]` before returning non-zero.
+- Prefer `std::cout` for normal status, `std::cerr` for errors.
+
+### Safe Refactor Boundaries
+- Do not change pipeline element order unless required.
+- Avoid touching RTSP server wiring when modifying AI logic.
+- Keep AI thread behavior non-blocking and bounded.
+
+## Environment Variables
+- `NANOSTREAM_THERMAL=1` enables thermal throttling logic.
+- `NANOSTREAM_DEBUG=1` enables debug thermal logs.
+- `NANOSTREAM_THERMAL_HIGH`, `NANOSTREAM_THERMAL_CRIT`,
+  `NANOSTREAM_THERMAL_SLEEP` tune throttling thresholds.
+- Other runtime toggles may exist; check `src/` before adding new ones.
+
+## Do and Do Not
+- Do keep changes minimal and local to the feature or fix.
+- Do not refactor while fixing a bug unless required.
+- Do not add new dependencies without a strong reason.
+- Do not change build scripts unless necessary for your task.
+
+## When Adding Tests (Future)
+- Add tests under `tests/` and register with CTest in `CMakeLists.txt`.
+- Ensure tests are fast and deterministic.
+- Provide a single-test command in this file after wiring CTest.

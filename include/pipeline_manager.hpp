@@ -1,12 +1,26 @@
 #pragma once
 
+#include <string>
 #include <gst/gst.h>
 #include <cairo.h>
-#include <string>
 #include "ncnn_detector.hpp"
 
 class PipelineManager {
 public:
+    struct PipelineConfig {
+        int width = 640;
+        int height = 480;
+        int framerate_num = 15;
+        int framerate_den = 1;
+        int ai_width = 320;
+        int ai_height = 320;
+        int stream_port = 5004;
+        int stream_queue_max = 10;
+        int ai_queue_max = 2;
+        bool useDmabuf = false;
+        bool useDirect = false;
+    };
+
     PipelineManager();
     ~PipelineManager();
 
@@ -29,16 +43,22 @@ private:
     bool buildPipelineInternal(bool use_dmabuf, bool use_direct);
     void rebuildSoftwarePipeline();
     void rebuildDmabufDirectPipeline();
+    void resetPipeline();
+    bool applyPipeline(const std::string& pipeline_desc);
 
     GstElement *pipeline = nullptr;
     GstElement *app_sink = nullptr;
     GstBus *bus = nullptr;
     NCNNDetector detector;
+    PipelineConfig config;
 
     bool use_dmabuf_config = false;
     bool dmabuf_active = false;
     bool dmabuf_disabled = false;
     bool dmabuf_direct_tried = false;
+    bool caps_logged = false;
+    int overlay_width = 640;
+    int overlay_height = 480;
     std::atomic<long long> last_sample_us{0};
 
     // Static callback wrapper for GStreamer C API
