@@ -1,5 +1,5 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/sh
+set -eu
 
 RTSP_URL=${1:-"rtsp://127.0.0.1:8554/live"}
 OUT_DIR=${2:-"calib"}
