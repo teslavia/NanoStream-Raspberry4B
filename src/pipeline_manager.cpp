@@ -58,18 +58,22 @@ void PipelineManager::draw_overlay(cairo_t *cr) {
 gboolean PipelineManager::on_bus_message(GstBus *bus, GstMessage *message, gpointer user_data) {
     auto* self = static_cast<PipelineManager*>(user_data);
     if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_ERROR && self->use_dmabuf_config && self->dmabuf_active) {
+        const char* debug_env = std::getenv("NANOSTREAM_DEBUG");
+        bool debug = (debug_env && std::string(debug_env) == "1");
         GError *err = nullptr;
         gchar *dbg = nullptr;
         gst_message_parse_error(message, &err, &dbg);
         std::string msg = err ? err->message : "";
+        const char* src_name = GST_MESSAGE_SRC(message) ? GST_OBJECT_NAME(GST_MESSAGE_SRC(message)) : "unknown";
         if (err) g_error_free(err);
         if (dbg) g_free(dbg);
 
-        if (msg.find("v4l2convert") != std::string::npos || msg.find("cannot import buffers") != std::string::npos) {
-            std::cout << "[NanoStream] DMABUF runtime failure detected, switching to software pipeline." << std::endl;
-            self->dmabuf_active = false;
-            self->rebuildSoftwarePipeline();
+        if (debug) {
+            std::cout << "[NanoStream] DMABUF error from " << src_name << ": " << msg << std::endl;
         }
+        std::cout << "[NanoStream] DMABUF runtime failure detected, switching to software pipeline." << std::endl;
+        self->dmabuf_active = false;
+        self->rebuildSoftwarePipeline();
     }
     return TRUE;
 }
