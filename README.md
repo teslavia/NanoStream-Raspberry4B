@@ -209,6 +209,7 @@ sh scripts/build.sh
 - P2 温控降频：`NANOSTREAM_THERMAL=1` 启用；阈值可通过 `NANOSTREAM_THERMAL_HIGH/CRIT/SLEEP` 配置。
 - DMABUF 禁用标记：失败后生成 `~/.nanostream_dmabuf_disabled`，后续自动走软件管线。
 - P2 性能对比记录模板：`docs/P2_PERF.md`
+ - P3 INT8 开关：`NANOSTREAM_INT8=1` 使用 INT8 模型，失败自动回退 FP32
 
 ## 📊 性能指标 (RPi 4B @ 1.5GHz)
 | 模块 | 分辨率 | 负载/延迟 |

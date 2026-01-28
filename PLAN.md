@@ -97,5 +97,8 @@
   - 温度（/sys/class/thermal/thermal_zone0/temp）
   - 编码器报错（dmesg/日志）
  - 记录模板：`docs/P2_PERF.md`
+
+## P3 实施记录（进行中）
+- INT8 模型开关：`NANOSTREAM_INT8=1` 启用，失败自动回退 FP32。
 **制定人**: mikylee
 **日期**: 2026-01-27

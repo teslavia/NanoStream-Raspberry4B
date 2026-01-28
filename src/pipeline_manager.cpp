@@ -239,7 +239,18 @@ bool PipelineManager::buildPipelineInternal(bool use_dmabuf, bool use_direct) {
         gst_bus_add_watch(bus, on_bus_message, this);
     }
 
-    detector.loadModel("models/nanodet_m.param", "models/nanodet_m.bin");
+    const char* int8_env = std::getenv("NANOSTREAM_INT8");
+    bool use_int8 = (int8_env && std::string(int8_env) == "1");
+    const std::string int8_param = "models/nanodet_m-int8.param";
+    const std::string int8_bin = "models/nanodet_m-int8.bin";
+    if (use_int8) {
+        if (!detector.loadModel(int8_param, int8_bin)) {
+            std::cout << "[NanoStream] INT8 model load failed, falling back to FP32." << std::endl;
+            detector.loadModel("models/nanodet_m.param", "models/nanodet_m.bin");
+        }
+    } else {
+        detector.loadModel("models/nanodet_m.param", "models/nanodet_m.bin");
+    }
     return true;
 }
 
