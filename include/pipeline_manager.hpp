@@ -39,6 +39,7 @@ private:
     bool dmabuf_active = false;
     bool dmabuf_disabled = false;
     bool dmabuf_direct_tried = false;
+    std::atomic<long long> last_sample_us{0};
 
     // Static callback wrapper for GStreamer C API
     static GstFlowReturn on_new_sample_wrapper(GstElement *sink, gpointer user_data);

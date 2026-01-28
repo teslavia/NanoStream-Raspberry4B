@@ -186,6 +186,21 @@ bool PipelineManager::buildPipelineInternal(bool use_dmabuf, bool use_direct) {
                   << " (set NANOSTREAM_DMABUF=0 to force software)" << std::endl;
     }
 
+    if (use_dmabuf && use_direct) {
+        last_sample_us.store(0);
+        std::thread([this]() {
+            std::this_thread::sleep_for(std::chrono::seconds(3));
+            if (!use_dmabuf_config || !dmabuf_active) return;
+            long long last = last_sample_us.load();
+            if (last == 0) {
+                std::cout << "[NanoStream] DMABUF direct pipeline produced no samples, falling back to software." << std::endl;
+                dmabuf_active = false;
+                dmabuf_disabled = true;
+                rebuildSoftwarePipeline();
+            }
+        }).detach();
+    }
+
     GstElement *osd = gst_bin_get_by_name(GST_BIN(pipeline), "osd");
     if (osd) {
         g_signal_connect(osd, "draw", G_CALLBACK(on_draw_wrapper), this);
@@ -273,6 +288,7 @@ GstFlowReturn PipelineManager::on_new_sample(GstElement *sink) {
         GstBuffer *buffer = gst_sample_get_buffer(sample);
         GstMapInfo map;
         if (gst_buffer_map(buffer, &map, GST_MAP_READ)) {
+            last_sample_us.store(g_get_monotonic_time());
             const size_t expected_size = static_cast<size_t>(320) * 320 * 3;
             if (map.size < expected_size) {
                 std::cerr << "[Warning] appsink buffer too small: " << map.size
