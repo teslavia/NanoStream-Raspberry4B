@@ -79,6 +79,12 @@ PipelineManager::~PipelineManager() {
 
 void PipelineManager::draw_overlay(cairo_t *cr) {
     std::vector<Detection> dets = detector.getDetections();
+
+    cairo_surface_t* surface = cairo_get_target(cr);
+    if (surface && cairo_surface_get_type(surface) == CAIRO_SURFACE_TYPE_IMAGE) {
+        overlay_width = cairo_image_surface_get_width(surface);
+        overlay_height = cairo_image_surface_get_height(surface);
+    }
     
     // 设置字体和基础绘图属性
     cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
@@ -331,15 +337,6 @@ GstFlowReturn PipelineManager::on_new_sample(GstElement *sink) {
         if (!caps_logged) {
             GstCaps *caps = gst_sample_get_caps(sample);
             if (caps) {
-                const GstStructure* s = gst_caps_get_structure(caps, 0);
-                int w = 0;
-                int h = 0;
-                if (gst_structure_get_int(s, "width", &w)) {
-                    overlay_width = w;
-                }
-                if (gst_structure_get_int(s, "height", &h)) {
-                    overlay_height = h;
-                }
                 gchar *caps_str = gst_caps_to_string(caps);
                 std::cout << "[Debug] appsink caps: " << caps_str << std::endl;
                 g_free(caps_str);
