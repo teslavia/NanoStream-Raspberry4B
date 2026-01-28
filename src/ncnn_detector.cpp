@@ -50,9 +50,10 @@ std::vector<Detection> NCNNDetector::getDetections() {
 }
 
 void NCNNDetector::workerLoop() {
-    struct State { int x, y, w, h; };
-    std::vector<State> history(5, {0,0,0,0});
-    const float alpha = 0.3f;
+    struct State { float x, y, w, h; };
+    State ema{0,0,0,0};
+    bool ema_init = false;
+    const float alpha = 0.5f;
     uint64_t frame_id = 0;
 
     while (running) {
@@ -92,12 +93,29 @@ void NCNNDetector::workerLoop() {
         std::vector<Detection> raw_dets;
         float max_score_all = -1e9f;
         bool any_head_ok = false;
+        const char* debug_env = std::getenv("NANOSTREAM_DEBUG");
+        bool debug = (debug_env && std::string(debug_env) == "1");
+
+        auto iou = [](const Detection& a, const Detection& b) {
+            int x1 = std::max(a.x, b.x);
+            int y1 = std::max(a.y, b.y);
+            int x2 = std::min(a.x + a.w, b.x + b.w);
+            int y2 = std::min(a.y + a.h, b.y + b.h);
+            int inter_w = std::max(0, x2 - x1);
+            int inter_h = std::max(0, y2 - y1);
+            int inter = inter_w * inter_h;
+            int area_a = a.w * a.h;
+            int area_b = b.w * b.h;
+            int uni = area_a + area_b - inter;
+            return uni > 0 ? (float)inter / (float)uni : 0.0f;
+        };
+
         for (const auto& h : heads) {
             ncnn::Mat out_cls, out_reg;
             int cls_ret = ex.extract(h.cls.c_str(), out_cls);
             int reg_ret = ex.extract(h.reg.c_str(), out_reg);
             bool extracted = (cls_ret == 0 && reg_ret == 0 && !out_cls.empty() && !out_reg.empty());
-            if (frame_id < 5) {
+            if (debug && frame_id < 5) {
                 std::cout << "\n[Diag] Head " << h.cls << "/" << h.reg
                           << " cls_ret=" << cls_ret << " reg_ret=" << reg_ret
                           << " cls_shape=" << out_cls.w << "x" << out_cls.h << "x" << out_cls.c
@@ -209,7 +227,7 @@ void NCNNDetector::workerLoop() {
             if (final_dets.size() >= 5) break;
             bool skip = false;
             for (const auto& f : final_dets) {
-                if (std::abs(f.x - d.x) < 20 && std::abs(f.y - d.y) < 20) { skip = true; break; }
+                if (iou(d, f) > 0.5f) { skip = true; break; }
             }
             if (!skip) final_dets.push_back(d);
         }
@@ -217,11 +235,25 @@ void NCNNDetector::workerLoop() {
         auto lat = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start).count();
         frame_id++;
         if (!final_dets.empty()) {
+            // EMA smoothing on top-1
+            if (!ema_init) {
+                ema = { (float)final_dets[0].x, (float)final_dets[0].y, (float)final_dets[0].w, (float)final_dets[0].h };
+                ema_init = true;
+            } else {
+                ema.x = alpha * final_dets[0].x + (1.0f - alpha) * ema.x;
+                ema.y = alpha * final_dets[0].y + (1.0f - alpha) * ema.y;
+                ema.w = alpha * final_dets[0].w + (1.0f - alpha) * ema.w;
+                ema.h = alpha * final_dets[0].h + (1.0f - alpha) * ema.h;
+            }
+            final_dets[0].x = (int)ema.x;
+            final_dets[0].y = (int)ema.y;
+            final_dets[0].w = (int)ema.w;
+            final_dets[0].h = (int)ema.h;
             std::cout << "\r[NanoStream] Detected: " << final_dets.size() << " | Lat: " << lat << "ms    " << std::flush;
             std::lock_guard<std::mutex> lock(result_mutex);
             current_detections = final_dets;
         } else {
-            if (frame_id % 60 == 0) {
+            if (debug && frame_id % 60 == 0) {
                 std::cout << "\r[NanoStream] MaxScore: " << max_score_all
                           << " | HeadOK: " << (any_head_ok ? "Y" : "N")
                           << " | Lat: " << lat << "ms    " << std::flush;
