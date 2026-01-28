@@ -286,7 +286,6 @@ void NCNNDetector::workerLoop() {
         std::sort(raw_dets.begin(), raw_dets.end(), [](const Detection& a, const Detection& b){ return a.score > b.score; });
         std::vector<Detection> final_dets;
         int per_class_count[80] = {0};
-        const float frame_area = 640.0f * 480.0f;
         const float small_thresh = 0.02f;  // <2% frame area
         const float medium_thresh = 0.08f; // <8% frame area
         int person_max = 2;
