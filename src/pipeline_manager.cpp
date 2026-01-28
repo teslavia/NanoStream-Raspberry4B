@@ -207,6 +207,7 @@ bool PipelineManager::buildPipeline() {
 }
 
 bool PipelineManager::buildPipelineInternal(bool use_dmabuf, bool use_direct) {
+    const RuntimeConfig& runtime = getRuntimeConfig();
     PipelineConfig local_config = config;
     local_config.useDmabuf = use_dmabuf;
     local_config.useDirect = use_direct;
