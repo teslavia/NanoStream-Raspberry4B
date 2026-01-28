@@ -58,6 +58,11 @@ void PipelineManager::draw_overlay(cairo_t *cr) {
 
 gboolean PipelineManager::on_bus_message(GstBus *bus, GstMessage *message, gpointer user_data) {
     auto* self = static_cast<PipelineManager*>(user_data);
+    auto write_disable_flag = []() {
+        const char* home = std::getenv("HOME");
+        std::string disable_flag = home ? std::string(home) + "/.nanostream_dmabuf_disabled" : std::string(".nanostream_dmabuf_disabled");
+        std::ofstream flag(disable_flag);
+    };
     if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_ERROR && self->use_dmabuf_config && self->dmabuf_active) {
         const char* debug_env = std::getenv("NANOSTREAM_DEBUG");
         bool debug = (debug_env && std::string(debug_env) == "1");
@@ -81,9 +86,7 @@ gboolean PipelineManager::on_bus_message(GstBus *bus, GstMessage *message, gpoin
             self->dmabuf_active = false;
             self->dmabuf_disabled = true;
             std::cout << "[NanoStream] DMABUF disabled on this platform. Use NANOSTREAM_DMABUF=0." << std::endl;
-            const char* home = std::getenv("HOME");
-            std::string disable_flag = home ? std::string(home) + "/.nanostream_dmabuf_disabled" : std::string(".nanostream_dmabuf_disabled");
-            std::ofstream flag(disable_flag);
+            write_disable_flag();
             self->rebuildSoftwarePipeline();
         }
     }
@@ -200,6 +203,11 @@ bool PipelineManager::buildPipelineInternal(bool use_dmabuf, bool use_direct) {
     }
 
     if (use_dmabuf && use_direct) {
+        auto write_disable_flag = []() {
+            const char* home = std::getenv("HOME");
+            std::string disable_flag = home ? std::string(home) + "/.nanostream_dmabuf_disabled" : std::string(".nanostream_dmabuf_disabled");
+            std::ofstream flag(disable_flag);
+        };
         last_sample_us.store(0);
         std::thread([this]() {
             std::this_thread::sleep_for(std::chrono::seconds(3));
@@ -209,6 +217,9 @@ bool PipelineManager::buildPipelineInternal(bool use_dmabuf, bool use_direct) {
                 std::cout << "[NanoStream] DMABUF direct pipeline produced no samples, falling back to software." << std::endl;
                 dmabuf_active = false;
                 dmabuf_disabled = true;
+                const char* home = std::getenv("HOME");
+                std::string disable_flag = home ? std::string(home) + "/.nanostream_dmabuf_disabled" : std::string(".nanostream_dmabuf_disabled");
+                std::ofstream flag(disable_flag);
                 rebuildSoftwarePipeline();
             }
         }).detach();
