@@ -26,12 +26,22 @@ public:
     void setAIThrottle(int sleep_ms, bool paused);
 
 private:
+    bool buildPipelineInternal(bool use_dmabuf);
+    void rebuildSoftwarePipeline();
+
     GstElement *pipeline = nullptr;
     GstElement *app_sink = nullptr;
+    GstBus *bus = nullptr;
     NCNNDetector detector;
+
+    bool use_dmabuf_config = false;
+    bool dmabuf_active = false;
 
     // Static callback wrapper for GStreamer C API
     static GstFlowReturn on_new_sample_wrapper(GstElement *sink, gpointer user_data);
+
+    // Bus message handler
+    static gboolean on_bus_message(GstBus *bus, GstMessage *message, gpointer user_data);
     
     // Actual member function to handle the sample
     GstFlowReturn on_new_sample(GstElement *sink);

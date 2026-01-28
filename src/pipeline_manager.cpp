@@ -55,6 +55,25 @@ void PipelineManager::draw_overlay(cairo_t *cr) {
     }
 }
 
+gboolean PipelineManager::on_bus_message(GstBus *bus, GstMessage *message, gpointer user_data) {
+    auto* self = static_cast<PipelineManager*>(user_data);
+    if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_ERROR && self->use_dmabuf_config && self->dmabuf_active) {
+        GError *err = nullptr;
+        gchar *dbg = nullptr;
+        gst_message_parse_error(message, &err, &dbg);
+        std::string msg = err ? err->message : "";
+        if (err) g_error_free(err);
+        if (dbg) g_free(dbg);
+
+        if (msg.find("v4l2convert") != std::string::npos || msg.find("cannot import buffers") != std::string::npos) {
+            std::cout << "[NanoStream] DMABUF runtime failure detected, switching to software pipeline." << std::endl;
+            self->dmabuf_active = false;
+            self->rebuildSoftwarePipeline();
+        }
+    }
+    return TRUE;
+}
+
 void PipelineManager::setAIThrottle(int sleep_ms, bool paused) {
     detector.setThrottle(sleep_ms, paused);
 }
@@ -64,10 +83,14 @@ static void on_draw_wrapper(GstElement *overlay, cairo_t *cr, guint64 timestamp,
 }
 
 bool PipelineManager::buildPipeline() {
-    std::stringstream ss;
-
     const char* dmabuf_env = std::getenv("NANOSTREAM_DMABUF");
     bool use_dmabuf = (dmabuf_env && std::string(dmabuf_env) == "1");
+    use_dmabuf_config = use_dmabuf;
+    return buildPipelineInternal(use_dmabuf);
+}
+
+bool PipelineManager::buildPipelineInternal(bool use_dmabuf) {
+    std::stringstream ss;
 
     // STABLE ENGINE: x264enc + OSD + 640x480
     // Force BGRx for Cairo OSD, then convert to I420 for encoder
@@ -121,6 +144,7 @@ bool PipelineManager::buildPipeline() {
         }
     }
 
+    dmabuf_active = use_dmabuf && !dmabuf_fallback;
     if (use_dmabuf) {
         std::cout << "[NanoStream] DMABUF status: "
                   << (dmabuf_fallback ? "fallback" : "active")
@@ -136,8 +160,29 @@ bool PipelineManager::buildPipeline() {
     app_sink = gst_bin_get_by_name(GST_BIN(pipeline), "ncnn_sink");
     g_signal_connect(app_sink, "new-sample", G_CALLBACK(on_new_sample_wrapper), this);
 
+    if (!bus) {
+        bus = gst_element_get_bus(pipeline);
+        gst_bus_add_watch(bus, on_bus_message, this);
+    }
+
     detector.loadModel("models/nanodet_m.param", "models/nanodet_m.bin");
     return true;
+}
+
+void PipelineManager::rebuildSoftwarePipeline() {
+    dmabuf_active = false;
+    if (pipeline) {
+        gst_element_set_state(pipeline, GST_STATE_NULL);
+        if (bus) {
+            gst_object_unref(bus);
+            bus = nullptr;
+        }
+        gst_object_unref(pipeline);
+        pipeline = nullptr;
+    }
+
+    buildPipelineInternal(false);
+    start();
 }
 
 void PipelineManager::start() {
@@ -147,6 +192,10 @@ void PipelineManager::start() {
 void PipelineManager::stop() {
     if (pipeline) {
         gst_element_set_state(pipeline, GST_STATE_NULL);
+        if (bus) {
+            gst_object_unref(bus);
+            bus = nullptr;
+        }
         gst_object_unref(pipeline);
         pipeline = nullptr;
     }
