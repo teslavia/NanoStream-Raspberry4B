@@ -55,6 +55,10 @@ void PipelineManager::draw_overlay(cairo_t *cr) {
     }
 }
 
+void PipelineManager::setAIThrottle(int sleep_ms, bool paused) {
+    detector.setThrottle(sleep_ms, paused);
+}
+
 static void on_draw_wrapper(GstElement *overlay, cairo_t *cr, guint64 timestamp, guint64 duration, gpointer user_data) {
     static_cast<PipelineManager*>(user_data)->draw_overlay(cr);
 }

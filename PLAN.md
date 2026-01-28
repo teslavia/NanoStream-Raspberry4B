@@ -78,6 +78,7 @@
 ## P2 实施记录（进行中）
 - 新增 DMABUF 零拷贝链路开关：通过 `NANOSTREAM_DMABUF=1` 启用。
 - 推流分支采用 `v4l2convert output-io-mode=dmabuf-import` → `v4l2h264enc output-io-mode=dmabuf-import`，锁定 NV12。
- - 视觉稳定性增强：IOU NMS + EMA 平滑，默认输出 top1。
+- 视觉稳定性增强：IOU NMS + EMA 平滑，默认输出 top1。
+- 温控降频开关：`NANOSTREAM_THERMAL=1` 启用，>75°C 降帧，>80°C 暂停 AI。
 **制定人**: mikylee
 **日期**: 2026-01-27

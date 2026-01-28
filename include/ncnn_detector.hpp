@@ -27,6 +27,9 @@ public:
     // Thread-safe access to latest results for OSD
     std::vector<Detection> getDetections();
 
+    // Thermal throttling controls
+    void setThrottle(int sleep_ms, bool paused);
+
 private:
     void workerLoop();
 
@@ -39,6 +42,9 @@ private:
     std::vector<unsigned char> pending_frame;
     int img_w = 0, img_h = 0;
     bool has_new_frame = false;
+
+    std::atomic<int> throttle_ms{0};
+    std::atomic<bool> paused{false};
 
     // Detection results
     std::mutex result_mutex;

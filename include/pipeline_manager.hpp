@@ -22,6 +22,9 @@ public:
     // OSD Drawing logic
     void draw_overlay(cairo_t *cr);
 
+    // Thermal throttling hook
+    void setAIThrottle(int sleep_ms, bool paused);
+
 private:
     GstElement *pipeline = nullptr;
     GstElement *app_sink = nullptr;

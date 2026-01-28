@@ -49,6 +49,11 @@ std::vector<Detection> NCNNDetector::getDetections() {
     return current_detections;
 }
 
+void NCNNDetector::setThrottle(int sleep_ms, bool is_paused) {
+    throttle_ms.store(sleep_ms);
+    paused.store(is_paused);
+}
+
 void NCNNDetector::workerLoop() {
     struct State { float x, y, w, h; };
     State ema{0,0,0,0};
@@ -57,6 +62,15 @@ void NCNNDetector::workerLoop() {
     uint64_t frame_id = 0;
 
     while (running) {
+        if (paused.load()) {
+            {
+                std::lock_guard<std::mutex> lock(result_mutex);
+                current_detections.clear();
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            continue;
+        }
+
         std::vector<unsigned char> local_frame;
         int w, h;
         {
@@ -66,6 +80,11 @@ void NCNNDetector::workerLoop() {
             local_frame = std::move(pending_frame);
             w = img_w; h = img_h;
             has_new_frame = false;
+        }
+
+        int sleep_ms = throttle_ms.load();
+        if (sleep_ms > 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(sleep_ms));
         }
 
         if (w <= 0 || h <= 0) continue;
