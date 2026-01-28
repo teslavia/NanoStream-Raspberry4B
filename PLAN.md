@@ -78,13 +78,14 @@
 ## P2 实施记录（进行中）
 - 新增 DMABUF 零拷贝链路开关：通过 `NANOSTREAM_DMABUF=1` 启用。
 - 推流分支采用 `v4l2convert output-io-mode=dmabuf-import` → `v4l2h264enc output-io-mode=dmabuf-import`，锁定 NV12。
-- 视觉稳定性增强：IOU NMS + EMA 平滑，默认输出 top1。
+- 视觉稳定性增强：多目标 IOU 关联 + EMA 平滑；同类过多框自适应限制。
 - 温控降频开关：`NANOSTREAM_THERMAL=1` 启用，阈值可配置：
   - `NANOSTREAM_THERMAL_HIGH` (默认 75000)
   - `NANOSTREAM_THERMAL_CRIT` (默认 80000)
   - `NANOSTREAM_THERMAL_SLEEP` (默认 100)
 - DMABUF 启动反馈：会打印 `DMABUF status: active/fallback` 便于确认是否回退。
 - 若平台不支持 DMABUF，会生成 `~/.nanostream_dmabuf_disabled`，后续启动自动回退到软件管线。
+ - COCO 类别标签：默认显示类名，可用 `NANOSTREAM_LABELS=0` 关闭。
 
 ## P2 性能对比测试（记录模板）
 - 测试条件：分辨率 640x480 @15fps，环境温度、供电稳定。

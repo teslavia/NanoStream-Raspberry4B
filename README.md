@@ -202,12 +202,13 @@ sh scripts/build.sh
 - 安全性：appsink caps/size 防护，OSD 安全绘制；gitignore 更新。
 
 ## ✅ 本次 dev 更新（新）
-- 稳定性增强：引入 IOU NMS + EMA 平滑，默认仅保留 top1 框，抖动显著降低。
-- P2 零拷贝：新增 `NANOSTREAM_DMABUF=1` 启用 v4l2convert/v4l2h264enc 的 DMABUF 链路。
+- 检测稳定性：改为多目标 IOU 关联 + EMA 平滑，减少跳框；同类过多框进行自适应限制。
+- 误报抑制：按目标面积自适应阈值，小目标更严格；person 误报过滤增强。
+- 多类标签：支持 COCO 类别名显示，`NANOSTREAM_LABELS=0` 关闭标签。
+- P2 零拷贝：DMABUF 双路径尝试（v4l2convert 与 direct），运行期自动回退。
 - P2 温控降频：`NANOSTREAM_THERMAL=1` 启用；阈值可通过 `NANOSTREAM_THERMAL_HIGH/CRIT/SLEEP` 配置。
-- DMABUF 回退提示：启动时会输出 DMABUF 状态（active/fallback）。
-- DMABUF 禁用标记：若平台不支持，生成 `~/.nanostream_dmabuf_disabled`，后续自动走软件管线。
- - P2 性能对比记录模板：`docs/P2_PERF.md`
+- DMABUF 禁用标记：失败后生成 `~/.nanostream_dmabuf_disabled`，后续自动走软件管线。
+- P2 性能对比记录模板：`docs/P2_PERF.md`
 
 ## 📊 性能指标 (RPi 4B @ 1.5GHz)
 | 模块 | 分辨率 | 负载/延迟 |
