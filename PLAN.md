@@ -95,5 +95,6 @@
   - 推流稳定性（掉帧/卡顿主观）
   - 温度（/sys/class/thermal/thermal_zone0/temp）
   - 编码器报错（dmesg/日志）
+ - 记录模板：`docs/P2_PERF.md`
 **制定人**: mikylee
 **日期**: 2026-01-27
