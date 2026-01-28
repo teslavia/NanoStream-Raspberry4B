@@ -275,6 +275,32 @@ void NCNNDetector::workerLoop() {
             int parsed = std::atoi(v);
             if (parsed >= 0) person_max = parsed;
         }
+
+        // Post-filter: suppress small false positives for person
+        int max_person_area = 0;
+        for (const auto& d : final_dets) {
+            if (d.class_id == 0) {
+                int area = d.w * d.h;
+                if (area > max_person_area) max_person_area = area;
+            }
+        }
+
+        if (max_person_area > 0) {
+            float ratio = 0.4f;
+            if (const char* v = std::getenv("NANOSTREAM_PERSON_MIN_AREA_RATIO")) {
+                float parsed = std::atof(v);
+                if (parsed >= 0.0f && parsed <= 1.0f) ratio = parsed;
+            }
+            std::vector<Detection> filtered;
+            filtered.reserve(final_dets.size());
+            for (const auto& d : final_dets) {
+                if (d.class_id == 0) {
+                    if (d.w * d.h < (int)(max_person_area * ratio)) continue;
+                }
+                filtered.push_back(d);
+            }
+            final_dets.swap(filtered);
+        }
         for (const auto& d : raw_dets) {
             if (final_dets.size() >= 6) break;
             if (d.class_id >= 0 && d.class_id < 80) {
