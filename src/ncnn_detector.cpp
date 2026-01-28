@@ -120,6 +120,7 @@ void NCNNDetector::workerLoop() {
             {"836", "839", 32}  // Large
         };
 
+        const float frame_area = 640.0f * 480.0f;
         std::vector<Detection> raw_dets;
         float max_score_all = -1e9f;
         bool any_head_ok = false;
