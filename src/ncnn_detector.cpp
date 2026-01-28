@@ -61,6 +61,17 @@ void NCNNDetector::workerLoop() {
     const float alpha = 0.65f;
     uint64_t frame_id = 0;
 
+    static const char* kCoco80[] = {
+        "person","bicycle","car","motorcycle","airplane","bus","train","truck","boat","traffic light",
+        "fire hydrant","stop sign","parking meter","bench","bird","cat","dog","horse","sheep","cow",
+        "elephant","bear","zebra","giraffe","backpack","umbrella","handbag","tie","suitcase","frisbee",
+        "skis","snowboard","sports ball","kite","baseball bat","baseball glove","skateboard","surfboard","tennis racket","bottle",
+        "wine glass","cup","fork","knife","spoon","bowl","banana","apple","sandwich","orange",
+        "broccoli","carrot","hot dog","pizza","donut","cake","chair","couch","potted plant","bed",
+        "dining table","toilet","tv","laptop","mouse","remote","keyboard","cell phone","microwave","oven",
+        "toaster","sink","refrigerator","book","clock","vase","scissors","teddy bear","hair drier","toothbrush"
+    };
+
     while (running) {
         if (paused.load()) {
             {
@@ -173,7 +184,10 @@ void NCNNDetector::workerLoop() {
                     const float* reg_ptr = out_reg.row(loc);
 
                     float max_score = 0.f;
-                    for (int c = 0; c < num_cls; ++c) max_score = std::max(max_score, cls_ptr[c]);
+                    int max_idx = 0;
+                    for (int c = 0; c < num_cls; ++c) {
+                        if (cls_ptr[c] > max_score) { max_score = cls_ptr[c]; max_idx = c; }
+                    }
                     if (max_score > max_score_all) max_score_all = max_score;
                     if (max_score <= 0.35f) continue;
                     if (kept++ > topk) continue;
@@ -196,7 +210,13 @@ void NCNNDetector::workerLoop() {
                     d.w = (int)((l + r) * scale_x);
                     d.h = (int)((t + b) * scale_y);
                     d.score = max_score;
-                    d.label = "Target";
+                    const char* label_env = std::getenv("NANOSTREAM_LABELS");
+                    bool show_labels = !(label_env && std::string(label_env) == "0");
+                    if (show_labels && max_idx >= 0 && max_idx < 80) {
+                        d.label = kCoco80[max_idx];
+                    } else {
+                        d.label = "Target";
+                    }
                     raw_dets.push_back(d);
                 }
                 continue;
