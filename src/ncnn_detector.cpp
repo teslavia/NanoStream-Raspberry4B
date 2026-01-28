@@ -286,16 +286,34 @@ void NCNNDetector::workerLoop() {
         }
 
         if (max_person_area > 0) {
-            float ratio = 0.4f;
+            float ratio = 0.6f;
+            float min_score = 0.55f;
+            float ar_min = 0.6f;
+            float ar_max = 2.5f;
             if (const char* v = std::getenv("NANOSTREAM_PERSON_MIN_AREA_RATIO")) {
                 float parsed = std::atof(v);
                 if (parsed >= 0.0f && parsed <= 1.0f) ratio = parsed;
+            }
+            if (const char* v = std::getenv("NANOSTREAM_PERSON_MIN_SCORE")) {
+                float parsed = std::atof(v);
+                if (parsed >= 0.0f && parsed <= 1.0f) min_score = parsed;
+            }
+            if (const char* v = std::getenv("NANOSTREAM_PERSON_AR_MIN")) {
+                float parsed = std::atof(v);
+                if (parsed > 0.0f) ar_min = parsed;
+            }
+            if (const char* v = std::getenv("NANOSTREAM_PERSON_AR_MAX")) {
+                float parsed = std::atof(v);
+                if (parsed > 0.0f) ar_max = parsed;
             }
             std::vector<Detection> filtered;
             filtered.reserve(final_dets.size());
             for (const auto& d : final_dets) {
                 if (d.class_id == 0) {
+                    float ar = d.h > 0 ? (float)d.h / (float)d.w : 0.0f;
                     if (d.w * d.h < (int)(max_person_area * ratio)) continue;
+                    if (d.score < min_score) continue;
+                    if (ar < ar_min || ar > ar_max) continue;
                 }
                 filtered.push_back(d);
             }
