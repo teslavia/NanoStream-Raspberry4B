@@ -218,6 +218,19 @@ void NCNNDetector::workerLoop() {
                         d.label = "Target";
                     }
                     d.class_id = max_idx;
+                    float area_norm = (d.w * d.h) / frame_area;
+                    float min_score = 0.30f;
+                    if (area_norm < 0.02f) min_score = 0.55f;
+                    else if (area_norm < 0.05f) min_score = 0.45f;
+                    if (d.class_id == 0) {
+                        float person_min = 0.55f;
+                        if (const char* v = std::getenv("NANOSTREAM_PERSON_MIN_SCORE")) {
+                            float parsed = std::atof(v);
+                            if (parsed >= 0.0f && parsed <= 1.0f) person_min = parsed;
+                        }
+                        if (min_score < person_min) min_score = person_min;
+                    }
+                    if (d.score < min_score) continue;
                     if (d.w * d.h < 400) continue;
                     raw_dets.push_back(d);
                 }
@@ -257,6 +270,11 @@ void NCNNDetector::workerLoop() {
                     d.score = score;
                     d.label = "Target";
                     d.class_id = -1;
+                    float area_norm = (d.w * d.h) / frame_area;
+                    float min_score = 0.30f;
+                    if (area_norm < 0.02f) min_score = 0.55f;
+                    else if (area_norm < 0.05f) min_score = 0.45f;
+                    if (d.score < min_score) continue;
                     if (d.w * d.h < 400) continue;
                     raw_dets.push_back(d);
                 }
