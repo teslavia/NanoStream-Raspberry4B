@@ -4,6 +4,7 @@
 #include <string>
 #include <algorithm>
 #include <cstdlib>
+#include <fstream>
 #include <gst/app/gstappsink.h>
 #include <cairo.h>
 #include <cairo-gobject.h>
