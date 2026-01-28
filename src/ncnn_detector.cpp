@@ -53,7 +53,7 @@ void NCNNDetector::workerLoop() {
     struct State { float x, y, w, h; };
     State ema{0,0,0,0};
     bool ema_init = false;
-    const float alpha = 0.5f;
+    const float alpha = 0.65f;
     uint64_t frame_id = 0;
 
     while (running) {
@@ -224,7 +224,7 @@ void NCNNDetector::workerLoop() {
         std::sort(raw_dets.begin(), raw_dets.end(), [](const Detection& a, const Detection& b){ return a.score > b.score; });
         std::vector<Detection> final_dets;
         for (const auto& d : raw_dets) {
-            if (final_dets.size() >= 5) break;
+            if (final_dets.size() >= 4) break;
             bool skip = false;
             for (const auto& f : final_dets) {
                 if (iou(d, f) > 0.5f) { skip = true; break; }
