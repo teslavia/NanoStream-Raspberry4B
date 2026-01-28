@@ -75,7 +75,7 @@ bool PipelineManager::buildPipeline() {
         "libcamerasrc ! video/x-raw,width=640,height=480,framerate=15/1,format=NV12 ! tee name=t "
         "t. ! queue max-size-buffers=10 leaky=downstream ! "
         "v4l2convert output-io-mode=dmabuf-import ! video/x-raw,format=NV12 ! "
-        "v4l2h264enc output-io-mode=dmabuf-import bitrate=1000 ! h264parse config-interval=1 ! "
+        "v4l2h264enc output-io-mode=dmabuf-import ! h264parse config-interval=1 ! "
         "video/x-h264,stream-format=byte-stream ! udpsink host=127.0.0.1 port=5004 sync=false async=false "
         "t. ! queue leaky=downstream max-size-buffers=2 ! videoscale ! videoconvert ! "
         "video/x-raw,format=RGB,width=320,height=320 ! appsink name=ncnn_sink sync=false async=false emit-signals=true";
@@ -98,12 +98,14 @@ bool PipelineManager::buildPipeline() {
     }
 
     GError *error = nullptr;
+    bool dmabuf_fallback = false;
     pipeline = gst_parse_launch(ss.str().c_str(), &error);
     if (error) {
         std::cerr << "[Error] " << error->message << std::endl;
         g_error_free(error);
         if (use_dmabuf) {
             std::cout << "[NanoStream] DMABUF pipeline failed, falling back to software pipeline." << std::endl;
+            dmabuf_fallback = true;
             ss.str("");
             ss.clear();
             ss << software_pipeline;
@@ -121,7 +123,7 @@ bool PipelineManager::buildPipeline() {
 
     if (use_dmabuf) {
         std::cout << "[NanoStream] DMABUF status: "
-                  << (pipeline ? "active" : "fallback")
+                  << (dmabuf_fallback ? "fallback" : "active")
                   << " (set NANOSTREAM_DMABUF=0 to force software)" << std::endl;
     }
 
