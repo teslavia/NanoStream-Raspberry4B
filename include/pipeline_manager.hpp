@@ -36,6 +36,7 @@ private:
 
     bool use_dmabuf_config = false;
     bool dmabuf_active = false;
+    bool dmabuf_disabled = false;
 
     // Static callback wrapper for GStreamer C API
     static GstFlowReturn on_new_sample_wrapper(GstElement *sink, gpointer user_data);

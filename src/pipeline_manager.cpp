@@ -73,6 +73,7 @@ gboolean PipelineManager::on_bus_message(GstBus *bus, GstMessage *message, gpoin
         }
         std::cout << "[NanoStream] DMABUF runtime failure detected, switching to software pipeline." << std::endl;
         self->dmabuf_active = false;
+        self->dmabuf_disabled = true;
         self->rebuildSoftwarePipeline();
     }
     return TRUE;
@@ -90,6 +91,10 @@ bool PipelineManager::buildPipeline() {
     const char* dmabuf_env = std::getenv("NANOSTREAM_DMABUF");
     bool use_dmabuf = (dmabuf_env && std::string(dmabuf_env) == "1");
     use_dmabuf_config = use_dmabuf;
+    if (use_dmabuf && dmabuf_disabled) {
+        std::cout << "[NanoStream] DMABUF disabled due to previous failure, using software pipeline." << std::endl;
+        use_dmabuf = false;
+    }
     return buildPipelineInternal(use_dmabuf);
 }
 
@@ -102,6 +107,14 @@ bool PipelineManager::buildPipelineInternal(bool use_dmabuf) {
         "libcamerasrc ! video/x-raw,width=640,height=480,framerate=15/1,format=NV12 ! tee name=t "
         "t. ! queue max-size-buffers=10 leaky=downstream ! "
         "v4l2convert output-io-mode=dmabuf-import ! video/x-raw,format=NV12 ! "
+        "v4l2h264enc output-io-mode=dmabuf-import ! h264parse config-interval=1 ! "
+        "video/x-h264,stream-format=byte-stream ! udpsink host=127.0.0.1 port=5004 sync=false async=false "
+        "t. ! queue leaky=downstream max-size-buffers=2 ! videoscale ! videoconvert ! "
+        "video/x-raw,format=RGB,width=320,height=320 ! appsink name=ncnn_sink sync=false async=false emit-signals=true";
+
+    const std::string dmabuf_direct_pipeline =
+        "libcamerasrc ! video/x-raw,width=640,height=480,framerate=15/1,format=NV12 ! tee name=t "
+        "t. ! queue max-size-buffers=10 leaky=downstream ! "
         "v4l2h264enc output-io-mode=dmabuf-import ! h264parse config-interval=1 ! "
         "video/x-h264,stream-format=byte-stream ! udpsink host=127.0.0.1 port=5004 sync=false async=false "
         "t. ! queue leaky=downstream max-size-buffers=2 ! videoscale ! videoconvert ! "
@@ -127,12 +140,24 @@ bool PipelineManager::buildPipelineInternal(bool use_dmabuf) {
     GError *error = nullptr;
     bool dmabuf_fallback = false;
     pipeline = gst_parse_launch(ss.str().c_str(), &error);
+    if (error && use_dmabuf) {
+        std::cerr << "[Error] " << error->message << std::endl;
+        g_error_free(error);
+        std::cout << "[NanoStream] DMABUF pipeline failed, trying direct DMABUF pipeline." << std::endl;
+        ss.str("");
+        ss.clear();
+        ss << dmabuf_direct_pipeline;
+        error = nullptr;
+        pipeline = gst_parse_launch(ss.str().c_str(), &error);
+    }
+
     if (error) {
         std::cerr << "[Error] " << error->message << std::endl;
         g_error_free(error);
         if (use_dmabuf) {
             std::cout << "[NanoStream] DMABUF pipeline failed, falling back to software pipeline." << std::endl;
             dmabuf_fallback = true;
+            dmabuf_disabled = true;
             ss.str("");
             ss.clear();
             ss << software_pipeline;
