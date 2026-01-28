@@ -37,42 +37,41 @@ graph TD
 
     subgraph GstPipeline [User Space: GStreamer Pipeline Main Thread]
         Source[libcamerasrc<br/>Camera Source]:::gstPipeline
-        Caps[capsfilter<br/>720p @ 30FPS, NV12/I420]:::gstPipeline
-        
+        Caps[capsfilter<br/>640x480 @ 15FPS, NV12]:::gstPipeline
         Tee{Tee<br/>Stream Splitter}:::critical
 
-        subgraph BranchA [Branch A: Low-Latency Streaming]
+        subgraph BranchA [Branch A: Streaming + OSD]
             QueueStream[queue<br/>Buffer for encoding]:::gstPipeline
-            Encoder[v4l2h264enc<br/>Hardware H.264 Encoder]:::critical
+            OSD[cairooverlay<br/>OSD Boxes/Labels]:::critical
+            SWPath[videoconvert -> x264enc<br/>Software Encode]:::gstPipeline
+            DMABUFPath[v4l2convert -> v4l2h264enc<br/>DMABUF (optional)]:::gstPipeline
             Parse[h264parse]:::gstPipeline
             Mux[rtph264pay<br/>RTP Payloader]:::gstPipeline
             Sink[udpsink<br/>Internal Bridge]:::gstPipeline
         end
 
         subgraph BranchB [Branch B: AI Inference Path]
-            QueueAI[queue<br/>leaky=downstream,<br/>max-size-buffers=1]:::critical
+            QueueAI[queue<br/>leaky=downstream]:::critical
             Scale[videoscale<br/>Resize to 320x320]:::gstPipeline
             Convert[videoconvert<br/>Convert to RGB]:::gstPipeline
             AppSink[appsink<br/>Bridge to C++]:::critical
         end
     end
 
-    subgraph CppApp [User Space: C++ Application Domain AI Worker Thread]
+    subgraph CppApp [User Space: C++ Application Domain]
         Callback[GStreamer Callback<br/>on new-sample]:::cppApp
-        
-        subgraph ZeroCopy [Zero-Copy Optimization]
-            MapBuffer[gst_buffer_map<br/>Get raw pointer]:::cppApp
-            NEON_Preproc[NEON Preprocessing<br/>Normalize/Pack]:::cppApp
-        end
+
+        RTSP[RTSP Server<br/>RTP-UDP Bridge]:::cppApp
+        MapBuffer[gst_buffer_map<br/>Get raw pointer]:::cppApp
 
         subgraph NCNNInference [NCNN High-Performance Inference]
             NCNN_Input[NCNN Input Layer<br/>ncnn::Mat::from_pixels]:::ncnn
-            NCNN_INT8[NCNN Model<br/>NanoDet-m / YOLO]:::critical
+            NCNN_INT8[NCNN Model<br/>NanoDet-m FP32/INT8]:::critical
             NCNN_Output[NCNN Output Layer<br/>Detection Results]:::ncnn
         end
 
-        PostProcess[Post-Processing<br/>NMS, Box Gen]:::cppApp
-        ResultOutput[Output: JSON Metadata / MQTT]:::cppApp
+        PostProcess[Post-Processing<br/>NMS, Box Gen, EMA]:::cppApp
+        ResultOutput[Output: OSD Overlay]:::cppApp
     end
 
     %% Connections
@@ -82,13 +81,17 @@ graph TD
 
     %% Branch A
     Tee --> QueueStream
-    QueueStream --> Encoder
-    Encoder -.->|Offload| VPU
-    VPU -.->|Encoded H.264| Encoder
-    Encoder --> Parse
+    QueueStream --> OSD
+    OSD --> SWPath
+    OSD --> DMABUFPath
+    DMABUFPath -.->|Offload| VPU
+    VPU -.->|Encoded H.264| DMABUFPath
+    SWPath --> Parse
+    DMABUFPath --> Parse
     Parse --> Mux
     Mux --> Sink
-    Sink -->|Internal Bridge| Internet(RTSP Server)
+    Sink -->|Internal Bridge| RTSP
+    RTSP --> WebRTC[MediaMTX WebRTC<br/>Optional]:::gstPipeline
 
     %% Branch B
     Tee --> QueueAI
@@ -99,8 +102,7 @@ graph TD
     %% C++ Integration
     AppSink -->|Signal: new-sample| Callback
     Callback --> MapBuffer
-    MapBuffer --> NEON_Preproc
-    NEON_Preproc --> NCNN_Input
+    MapBuffer --> NCNN_Input
     NCNN_Input --> NCNN_INT8
     NCNN_INT8 -.->|SIMD| CPU_Neon
     NCNN_INT8 --> NCNN_Output
@@ -209,6 +211,7 @@ sh scripts/build.sh
 - P2 温控降频：`NANOSTREAM_THERMAL=1` 启用；阈值可通过 `NANOSTREAM_THERMAL_HIGH/CRIT/SLEEP` 配置。
 - DMABUF 禁用标记：失败后生成 `~/.nanostream_dmabuf_disabled`，后续自动走软件管线。
 - P2 性能对比记录模板：`docs/P2_PERF.md`
+- WebRTC 旁路：RTSP 可由 MediaMTX 转 WebRTC（部署在 `deploy/mediamtx`）
 - P3 INT8 开关：`NANOSTREAM_INT8=1` 使用 INT8 模型，失败自动回退 FP32
 - INT8 路径可配置：`NANOSTREAM_INT8_PARAM` / `NANOSTREAM_INT8_BIN`
 
