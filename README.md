@@ -37,42 +37,41 @@ graph TD
 
     subgraph GstPipeline [User Space: GStreamer Pipeline Main Thread]
         Source[libcamerasrc<br/>Camera Source]:::gstPipeline
-        Caps[capsfilter<br/>720p @ 30FPS, NV12/I420]:::gstPipeline
-        
+        Caps[capsfilter<br/>640x480 @ 15FPS, NV12]:::gstPipeline
         Tee{Tee<br/>Stream Splitter}:::critical
 
-        subgraph BranchA [Branch A: Low-Latency Streaming]
+        subgraph BranchA [Branch A: Streaming + OSD]
             QueueStream[queue<br/>Buffer for encoding]:::gstPipeline
-            Encoder[v4l2h264enc<br/>Hardware H.264 Encoder]:::critical
+            OSD[cairooverlay<br/>OSD Boxes/Labels]:::critical
+            SWPath[videoconvert -> x264enc<br/>Software Encode]:::gstPipeline
+            DMABUFPath[v4l2convert -> v4l2h264enc<br/>DMABUF optional]:::gstPipeline
             Parse[h264parse]:::gstPipeline
             Mux[rtph264pay<br/>RTP Payloader]:::gstPipeline
             Sink[udpsink<br/>Internal Bridge]:::gstPipeline
         end
 
         subgraph BranchB [Branch B: AI Inference Path]
-            QueueAI[queue<br/>leaky=downstream,<br/>max-size-buffers=1]:::critical
+            QueueAI[queue<br/>leaky=downstream]:::critical
             Scale[videoscale<br/>Resize to 320x320]:::gstPipeline
             Convert[videoconvert<br/>Convert to RGB]:::gstPipeline
             AppSink[appsink<br/>Bridge to C++]:::critical
         end
     end
 
-    subgraph CppApp [User Space: C++ Application Domain AI Worker Thread]
+    subgraph CppApp [User Space: C++ Application Domain]
         Callback[GStreamer Callback<br/>on new-sample]:::cppApp
-        
-        subgraph ZeroCopy [Zero-Copy Optimization]
-            MapBuffer[gst_buffer_map<br/>Get raw pointer]:::cppApp
-            NEON_Preproc[NEON Preprocessing<br/>Normalize/Pack]:::cppApp
-        end
+
+        RTSP[RTSP Server<br/>RTP-UDP Bridge]:::cppApp
+        MapBuffer[gst_buffer_map<br/>Get raw pointer]:::cppApp
 
         subgraph NCNNInference [NCNN High-Performance Inference]
             NCNN_Input[NCNN Input Layer<br/>ncnn::Mat::from_pixels]:::ncnn
-            NCNN_INT8[NCNN Model<br/>NanoDet-m / YOLO]:::critical
+            NCNN_INT8[NCNN Model<br/>NanoDet-m FP32/INT8]:::critical
             NCNN_Output[NCNN Output Layer<br/>Detection Results]:::ncnn
         end
 
-        PostProcess[Post-Processing<br/>NMS, Box Gen]:::cppApp
-        ResultOutput[Output: JSON Metadata / MQTT]:::cppApp
+        PostProcess[Post-Processing<br/>NMS, Box Gen, EMA]:::cppApp
+        ResultOutput[Output: OSD Overlay]:::cppApp
     end
 
     %% Connections
@@ -82,13 +81,17 @@ graph TD
 
     %% Branch A
     Tee --> QueueStream
-    QueueStream --> Encoder
-    Encoder -.->|Offload| VPU
-    VPU -.->|Encoded H.264| Encoder
-    Encoder --> Parse
+    QueueStream --> OSD
+    OSD --> SWPath
+    OSD --> DMABUFPath
+    DMABUFPath -.->|Offload| VPU
+    VPU -.->|Encoded H.264| DMABUFPath
+    SWPath --> Parse
+    DMABUFPath --> Parse
     Parse --> Mux
     Mux --> Sink
-    Sink -->|Internal Bridge| Internet(RTSP Server)
+    Sink -->|Internal Bridge| RTSP
+    RTSP --> WebRTC[MediaMTX WebRTC<br/>Optional]:::gstPipeline
 
     %% Branch B
     Tee --> QueueAI
@@ -99,8 +102,7 @@ graph TD
     %% C++ Integration
     AppSink -->|Signal: new-sample| Callback
     Callback --> MapBuffer
-    MapBuffer --> NEON_Preproc
-    NEON_Preproc --> NCNN_Input
+    MapBuffer --> NCNN_Input
     NCNN_Input --> NCNN_INT8
     NCNN_INT8 -.->|SIMD| CPU_Neon
     NCNN_INT8 --> NCNN_Output
@@ -184,6 +186,39 @@ sh scripts/build.sh
     - 探索集成网页端的低延迟播放支持，实现无需客户端软件的实时监控。
 
 ---
+
+## ✅ P1 交付指南
+详细的 P1 执行清单、验收标准与测试步骤见：
+`docs/P1.md`
+
+### WebRTC 旁路部署（MediaMTX）
+模板位于：
+`deploy/mediamtx`
+
+---
+
+## 📝 本次 dev 合并摘要
+- NanoDet-m 解码修复：支持 1 通道 cls/reg 分布式回归（reg_max=7，4x8 bins），正确输出 bbox。
+- 稳定性提升：阈值上调、近邻去重收紧、候选 cap 限制，减少重复/抖动框；禁用 packing layout，完善头部诊断日志。
+- WebRTC 兼容：本地播放器兼容 path 参数与多端点；MediaMTX 端口避冲突。
+- 安全性：appsink caps/size 防护，OSD 安全绘制；gitignore 更新。
+
+## ✅ 本次 dev 更新（新）
+- 检测稳定性：改为多目标 IOU 关联 + EMA 平滑，减少跳框；同类过多框进行自适应限制。
+- 误报抑制：按目标面积自适应阈值，小目标更严格；person 误报过滤增强。
+- 多类标签：支持 COCO 类别名显示，`NANOSTREAM_LABELS=0` 关闭标签。
+- P2 零拷贝：DMABUF 双路径尝试（v4l2convert 与 direct），运行期自动回退。
+- P2 温控降频：`NANOSTREAM_THERMAL=1` 启用；阈值可通过 `NANOSTREAM_THERMAL_HIGH/CRIT/SLEEP` 配置。
+- DMABUF 禁用标记：失败后生成 `~/.nanostream_dmabuf_disabled`，后续自动走软件管线。
+- P2 性能对比记录模板：`docs/P2_PERF.md`
+- WebRTC 旁路：RTSP 可由 MediaMTX 转 WebRTC（部署在 `deploy/mediamtx`）
+- P3 INT8 开关：`NANOSTREAM_INT8=1` 使用 INT8 模型，失败自动回退 FP32
+- INT8 路径可配置：`NANOSTREAM_INT8_PARAM` / `NANOSTREAM_INT8_BIN`
+- 可维护性重构：Pipeline/Detector 拆分与配置集中（RuntimeConfig/DetectorConfig），减少硬编码与重复逻辑
+- 配置与日志：运行时参数集中解析，debug 日志支持机器可解析格式
+- RTSP 地址：支持 `NANOSTREAM_RTSP_HOST` 并自动解析本机 IP
+- OSD 尺寸：从 caps 获取 overlay 尺寸，避免 640x480 写死
+- Detector 覆盖项：`NANOSTREAM_DET_*` 支持阈值、TopK、heads 等参数覆写
 
 ## 📊 性能指标 (RPi 4B @ 1.5GHz)
 | 模块 | 分辨率 | 负载/延迟 |

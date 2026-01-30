@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MediaMTX WebRTC Player</title>
+    <style>
+      body { font-family: Arial, sans-serif; margin: 24px; }
+      .row { margin-bottom: 12px; }
+      input { width: 360px; padding: 6px 8px; }
+      button { padding: 6px 10px; margin-right: 8px; }
+      video { width: 100%; max-width: 720px; background: #000; }
+      .hint { color: #666; font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <h1>MediaMTX WebRTC Player</h1>
+    <div class="row">
+      <label>WebRTC URL:</label>
+      <input id="webrtcUrl" value="http://192.168.1.48:8889/" />
+    </div>
+    <div class="row">
+      <label>Path:</label>
+      <input id="webrtcPath" value="live" />
+      <button id="startBtn">Start</button>
+      <button id="stopBtn">Stop</button>
+    </div>
+    <div class="row hint">
+      - Ensure NanoStream RTSP is running on port 8554
+      - MediaMTX should be running with webrtc enabled
+    </div>
+    <video id="video" playsinline autoplay muted controls></video>
+
+    <script>
+      const video = document.getElementById('video');
+      const startBtn = document.getElementById('startBtn');
+      const stopBtn = document.getElementById('stopBtn');
+      const webrtcUrlInput = document.getElementById('webrtcUrl');
+      const webrtcPathInput = document.getElementById('webrtcPath');
+
+      let pc = null;
+
+      async function start() {
+        if (pc) return;
+        pc = new RTCPeerConnection({
+          iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+        });
+
+        pc.ontrack = (event) => {
+          video.srcObject = event.streams[0];
+        };
+
+        const offer = await pc.createOffer({ offerToReceiveVideo: true });
+        await pc.setLocalDescription(offer);
+
+        const baseUrl = webrtcUrlInput.value.replace(/\/$/, '');
+        const pathValue = (webrtcPathInput.value.trim() || 'live');
+        const bodyWithPath = {
+          sdp: pc.localDescription.sdp,
+          type: pc.localDescription.type,
+          path: pathValue
+        };
+
+        const endpoints = [
+          { path: '/' + pathValue + '/webrtc', mode: 'json' },
+          { path: '/' + pathValue + '/whep', mode: 'sdp' },
+          { path: '/webrtc?path=' + encodeURIComponent(pathValue), mode: 'json' },
+          { path: '/webrtc', mode: 'json' },
+          { path: '/v1/webrtc?path=' + encodeURIComponent(pathValue), mode: 'json' },
+          { path: '/v1/webrtc', mode: 'json' },
+          { path: '/whep?path=' + encodeURIComponent(pathValue), mode: 'sdp' },
+          { path: '/v1/whep?path=' + encodeURIComponent(pathValue), mode: 'sdp' }
+        ];
+
+        let res = null;
+        let mode = 'json';
+        for (const endpoint of endpoints) {
+          mode = endpoint.mode;
+          if (mode === 'sdp') {
+            res = await fetch(baseUrl + endpoint.path, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/sdp' },
+              body: pc.localDescription.sdp
+            });
+          } else {
+            res = await fetch(baseUrl + endpoint.path, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: endpoint.path.includes('?path=')
+                ? JSON.stringify({ sdp: bodyWithPath.sdp, type: bodyWithPath.type })
+                : JSON.stringify(bodyWithPath)
+            });
+          }
+          if (res.status !== 404) break;
+        }
+
+        if (!res || !res.ok) {
+          throw new Error('HTTP ' + (res ? res.status : 'no response'));
+        }
+
+        if (mode === 'sdp') {
+          const answerSdp = await res.text();
+          await pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: answerSdp }));
+        } else {
+          const data = await res.json();
+          await pc.setRemoteDescription(new RTCSessionDescription(data));
+        }
+      }
+
+      function stop() {
+        if (!pc) return;
+        pc.getSenders().forEach(sender => sender.track && sender.track.stop());
+        pc.close();
+        pc = null;
+        video.srcObject = null;
+      }
+
+      startBtn.addEventListener('click', () => {
+        start().catch(err => {
+          alert('Start failed: ' + err.message);
+          stop();
+        });
+      });
+
+      stopBtn.addEventListener('click', stop);
+    </script>
+  </body>
+</html>

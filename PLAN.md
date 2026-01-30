@@ -69,5 +69,37 @@
 | **P3** | 定制 INT8 量化表 | 2 天 | Low |
 
 ---
-**制定人**: opencode
+
+## 进展更新（dev 合并）
+- P1 OSD/WebRTC 已落地：cairooverlay 叠加、MediaMTX 旁路模板、本地 WebRTC 播放页兼容 path 与多端点。
+- 检测管线修复与稳定性提升：NanoDet-m 分布式回归解码正确化；阈值/去重/NMS 调优，减少抖动重复框；appsink/OSD 防护。
+- 工程健壮性：禁用 packing layout、完善头部诊断与日志；gitignore 更新。
+
+## P2 实施记录（进行中）
+- 新增 DMABUF 零拷贝链路开关：通过 `NANOSTREAM_DMABUF=1` 启用。
+- 推流分支采用 `v4l2convert output-io-mode=dmabuf-import` → `v4l2h264enc output-io-mode=dmabuf-import`，锁定 NV12。
+- 视觉稳定性增强：多目标 IOU 关联 + EMA 平滑；同类过多框自适应限制。
+- 温控降频开关：`NANOSTREAM_THERMAL=1` 启用，阈值可配置：
+  - `NANOSTREAM_THERMAL_HIGH` (默认 75000)
+  - `NANOSTREAM_THERMAL_CRIT` (默认 80000)
+  - `NANOSTREAM_THERMAL_SLEEP` (默认 100)
+- DMABUF 启动反馈：会打印 `DMABUF status: active/fallback` 便于确认是否回退。
+- 若平台不支持 DMABUF，会生成 `~/.nanostream_dmabuf_disabled`，后续启动自动回退到软件管线。
+ - COCO 类别标签：默认显示类名，可用 `NANOSTREAM_LABELS=0` 关闭。
+
+## P2 性能对比测试（记录模板）
+- 测试条件：分辨率 640x480 @15fps，环境温度、供电稳定。
+- 对比项：DMABUF=1 vs DMABUF=0。
+- 记录指标：
+  - CPU 占用（top/htop）
+  - AI 延迟（日志 Lat）
+  - 推流稳定性（掉帧/卡顿主观）
+  - 温度（/sys/class/thermal/thermal_zone0/temp）
+  - 编码器报错（dmesg/日志）
+ - 记录模板：`docs/P2_PERF.md`
+
+## P3 实施记录（进行中）
+- INT8 模型开关：`NANOSTREAM_INT8=1` 启用，失败自动回退 FP32。
+- INT8 路径配置：`NANOSTREAM_INT8_PARAM` / `NANOSTREAM_INT8_BIN`。
+**制定人**: mikylee
 **日期**: 2026-01-27
