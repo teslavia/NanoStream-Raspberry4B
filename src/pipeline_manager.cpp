@@ -183,6 +183,10 @@ bool PipelineManager::applyPipeline(const std::string& pipeline_desc) {
 
     app_sink = gst_bin_get_by_name(GST_BIN(pipeline), "ncnn_sink");
     g_signal_connect(app_sink, "new-sample", G_CALLBACK(on_new_sample_wrapper), this);
+    if (app_sink) {
+        gst_object_unref(app_sink);
+        app_sink = nullptr;
+    }
 
     if (!bus) {
         bus = gst_element_get_bus(pipeline);
@@ -246,7 +250,7 @@ bool PipelineManager::buildPipelineInternal(bool use_dmabuf, bool use_direct) {
                 return false;
             }
         }
-    }
+    } 
 
     dmabuf_active = use_dmabuf && !dmabuf_fallback;
     if (use_dmabuf) {

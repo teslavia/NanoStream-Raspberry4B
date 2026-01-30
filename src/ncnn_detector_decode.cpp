@@ -5,8 +5,9 @@
 
 float NCNNDetector::distExpect(const float* p, int bins) const {
     float maxv = p[0];
-    for (int i = 1; i < bins; ++i) maxv = std::max(maxv, p[i]);
     float sum = 0.f;
+    if (bins > 16) return 0.0f;
+    for (int i = 1; i < bins; ++i) maxv = std::max(maxv, p[i]);
     float expbuf[16];
     for (int i = 0; i < bins; ++i) {
         float expv = std::exp(p[i] - maxv);
