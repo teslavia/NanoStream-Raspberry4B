@@ -1,10 +1,13 @@
-#include "ncnn_detector.hpp"
 #include <iostream>
 #include <chrono>
 #include <cstring>
 #include <vector>
 #include <algorithm>
 #include <cmath>
+#include <sstream>
+
+#include "ncnn_detector.hpp"
+#include "runtime_config.hpp"
 
 NCNNDetector::NCNNDetector() {
     net.opt.num_threads = 4;
@@ -54,8 +57,115 @@ void NCNNDetector::setThrottle(int sleep_ms, bool is_paused) {
     paused.store(is_paused);
 }
 
+bool NCNNDetector::waitForFrame(std::vector<unsigned char>& frame, int& w, int& h) {
+    std::unique_lock<std::mutex> lock(frame_mutex);
+    frame_cv.wait(lock, [this]{ return has_new_frame || !running; });
+    if (!running) return false;
+    frame = std::move(pending_frame);
+    w = img_w;
+    h = img_h;
+    has_new_frame = false;
+    return true;
+}
+
+bool NCNNDetector::prepareInput(const std::vector<unsigned char>& frame, int w, int h, ncnn::Mat& in) {
+    if (w <= 0 || h <= 0) return false;
+    const size_t expected_size = static_cast<size_t>(w) * static_cast<size_t>(h) * 3;
+    if (frame.size() < expected_size) return false;
+
+    in = ncnn::Mat::from_pixels(frame.data(), ncnn::Mat::PIXEL_BGR, w, h);
+    const float mean_vals[3] = {103.53f, 116.28f, 123.675f};
+    const float norm_vals[3] = {0.017429f, 0.017507f, 0.017125f};
+    in.substract_mean_normalize(mean_vals, norm_vals);
+    return true;
+}
+
+void NCNNDetector::clearResults() {
+    std::lock_guard<std::mutex> lock(result_mutex);
+    current_detections.clear();
+    prev_detections.clear();
+}
+
+std::string NCNNDetector::formatDetectorConfig() const {
+    std::ostringstream out;
+    out << "det_frame_w=" << config.frameWidth
+        << " det_frame_h=" << config.frameHeight
+        << " det_input_w=" << config.inputWidth
+        << " det_input_h=" << config.inputHeight
+        << " det_base_score=" << config.baseScore
+        << " det_min_score_small=" << config.minScoreSmallArea
+        << " det_min_score_med=" << config.minScoreMediumArea
+        << " det_area_small=" << config.minScoreSmallAreaThreshold
+        << " det_area_med=" << config.minScoreMediumAreaThreshold
+        << " det_cap_area_small=" << config.capSmallAreaThreshold
+        << " det_cap_area_med=" << config.capMediumAreaThreshold
+        << " det_min_box_area=" << config.minBoxArea
+        << " det_max_det=" << config.maxDetections
+        << " det_topk=" << config.topK
+        << " det_iou=" << config.iouThreshold
+        << " det_ema=" << config.emaAlpha;
+
+    out << " det_heads=";
+    for (size_t i = 0; i < config.heads.size(); ++i) {
+        const auto& h = config.heads[i];
+        if (i > 0) out << ",";
+        out << h.cls << ":" << h.reg << ":" << h.stride;
+    }
+    return out.str();
+}
+
+void NCNNDetector::applyRuntimeOverrides(const RuntimeConfig& runtime) {
+    if (runtime.detInputWidth > 0) config.inputWidth = runtime.detInputWidth;
+    if (runtime.detInputHeight > 0) config.inputHeight = runtime.detInputHeight;
+    if (runtime.detTopK > 0) config.topK = runtime.detTopK;
+    if (runtime.detMaxDetections > 0) config.maxDetections = runtime.detMaxDetections;
+    if (runtime.detMinBoxArea > 0) config.minBoxArea = runtime.detMinBoxArea;
+    if (runtime.detBaseScore > 0.0f) config.baseScore = runtime.detBaseScore;
+    if (runtime.detMinScoreSmallArea > 0.0f) config.minScoreSmallArea = runtime.detMinScoreSmallArea;
+    if (runtime.detMinScoreMediumArea > 0.0f) config.minScoreMediumArea = runtime.detMinScoreMediumArea;
+    if (runtime.detMinScoreSmallAreaThreshold > 0.0f) {
+        config.minScoreSmallAreaThreshold = runtime.detMinScoreSmallAreaThreshold;
+    }
+    if (runtime.detMinScoreMediumAreaThreshold > 0.0f) {
+        config.minScoreMediumAreaThreshold = runtime.detMinScoreMediumAreaThreshold;
+    }
+    if (runtime.detCapSmallAreaThreshold > 0.0f) {
+        config.capSmallAreaThreshold = runtime.detCapSmallAreaThreshold;
+    }
+    if (runtime.detCapMediumAreaThreshold > 0.0f) {
+        config.capMediumAreaThreshold = runtime.detCapMediumAreaThreshold;
+    }
+    if (runtime.detIouThreshold > 0.0f) config.iouThreshold = runtime.detIouThreshold;
+    if (runtime.detEmaAlpha > 0.0f) config.emaAlpha = runtime.detEmaAlpha;
+
+    if (!runtime.detHeads.empty()) {
+        std::vector<DetectorConfig::Head> parsed;
+        size_t start = 0;
+        while (start < runtime.detHeads.size()) {
+            size_t end = runtime.detHeads.find(',', start);
+            std::string token = runtime.detHeads.substr(start, end - start);
+            size_t p1 = token.find(':');
+            size_t p2 = token.find(':', p1 == std::string::npos ? p1 : p1 + 1);
+            if (p1 != std::string::npos && p2 != std::string::npos) {
+                DetectorConfig::Head h;
+                h.cls = token.substr(0, p1);
+                h.reg = token.substr(p1 + 1, p2 - p1 - 1);
+                h.stride = std::atoi(token.substr(p2 + 1).c_str());
+                if (!h.cls.empty() && !h.reg.empty() && h.stride > 0) {
+                    parsed.push_back(h);
+                }
+            }
+            if (end == std::string::npos) break;
+            start = end + 1;
+        }
+        if (!parsed.empty()) {
+            config.heads = parsed;
+        }
+    }
+}
+
+
 void NCNNDetector::workerLoop() {
-    const float alpha = 0.6f;
     uint64_t frame_id = 0;
 
     static const char* kCoco80[] = {
@@ -70,88 +180,45 @@ void NCNNDetector::workerLoop() {
     };
 
     while (running) {
+        const RuntimeConfig& runtime = getRuntimeConfig();
+        applyRuntimeOverrides(runtime);
+        if (runtime.debug && !config_logged) {
+            std::cout << "[NanoStream] Detector config: " << formatDetectorConfig() << std::endl;
+            config_logged = true;
+        }
         if (paused.load()) {
-            {
-                std::lock_guard<std::mutex> lock(result_mutex);
-                current_detections.clear();
-            }
+            clearResults();
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
             continue;
         }
 
         std::vector<unsigned char> local_frame;
-        int w, h;
-        {
-            std::unique_lock<std::mutex> lock(frame_mutex);
-            frame_cv.wait(lock, [this]{ return has_new_frame || !running; });
-            if (!running) break;
-            local_frame = std::move(pending_frame);
-            w = img_w; h = img_h;
-            has_new_frame = false;
-        }
+        int w = 0, h = 0;
+        if (!waitForFrame(local_frame, w, h)) break;
 
         int sleep_ms = throttle_ms.load();
         if (sleep_ms > 0) {
             std::this_thread::sleep_for(std::chrono::milliseconds(sleep_ms));
         }
 
-        if (w <= 0 || h <= 0) continue;
-        const size_t expected_size = static_cast<size_t>(w) * static_cast<size_t>(h) * 3;
-        if (local_frame.size() < expected_size) continue;
+        ncnn::Mat in;
+        if (!prepareInput(local_frame, w, h, in)) continue;
 
         auto start = std::chrono::high_resolution_clock::now();
-        ncnn::Mat in = ncnn::Mat::from_pixels(local_frame.data(), ncnn::Mat::PIXEL_BGR, w, h);
-        const float mean_vals[3] = {103.53f, 116.28f, 123.675f};
-        const float norm_vals[3] = {0.017429f, 0.017507f, 0.017125f};
-        in.substract_mean_normalize(mean_vals, norm_vals);
 
         ncnn::Extractor ex = net.create_extractor();
         ex.set_light_mode(true);
         ex.input("input.1", in);
         
-        // 定义三尺度节点 ID (Cls, Reg, Stride)
-        struct Head { std::string cls; std::string reg; int stride; };
-        std::vector<Head> heads = {
-            {"792", "795", 8},  // Small
-            {"814", "817", 16}, // Medium
-            {"836", "839", 32}  // Large
-        };
-
-        const float frame_area = 640.0f * 480.0f;
+        const float frame_area = static_cast<float>(config.frameWidth) * config.frameHeight;
         std::vector<Detection> raw_dets;
         float max_score_all = -1e9f;
         bool any_head_ok = false;
-        const char* debug_env = std::getenv("NANOSTREAM_DEBUG");
-        bool debug = (debug_env && std::string(debug_env) == "1");
+        bool debug = runtime.debug;
 
-        auto iou = [](const Detection& a, const Detection& b) {
-            int x1 = std::max(a.x, b.x);
-            int y1 = std::max(a.y, b.y);
-            int x2 = std::min(a.x + a.w, b.x + b.w);
-            int y2 = std::min(a.y + a.h, b.y + b.h);
-            int inter_w = std::max(0, x2 - x1);
-            int inter_h = std::max(0, y2 - y1);
-            int inter = inter_w * inter_h;
-            int area_a = a.w * a.h;
-            int area_b = b.w * b.h;
-            int uni = area_a + area_b - inter;
-            return uni > 0 ? (float)inter / (float)uni : 0.0f;
-        };
-
-        for (const auto& h : heads) {
+        for (const auto& h : config.heads) {
             ncnn::Mat out_cls, out_reg;
-            int cls_ret = ex.extract(h.cls.c_str(), out_cls);
-            int reg_ret = ex.extract(h.reg.c_str(), out_reg);
-            bool extracted = (cls_ret == 0 && reg_ret == 0 && !out_cls.empty() && !out_reg.empty());
-            if (debug && frame_id < 5) {
-                std::cout << "\n[Diag] Head " << h.cls << "/" << h.reg
-                          << " cls_ret=" << cls_ret << " reg_ret=" << reg_ret
-                          << " cls_shape=" << out_cls.w << "x" << out_cls.h << "x" << out_cls.c
-                          << " reg_shape=" << out_reg.w << "x" << out_reg.h << "x" << out_reg.c
-                          << " cls_empty=" << out_cls.empty() << " reg_empty=" << out_reg.empty()
-                          << std::endl;
-            }
-            if (!extracted) continue;
+            if (!extractHeadOutputs(ex, h.cls, h.reg, frame_id, debug, out_cls, out_reg)) continue;
 
             // Layout handling: NanoDet-m (ncnn-assets) uses distribution regression (reg_max=7, 4*8 bins), and cls folded into w.
             if (out_cls.c == 1 && out_reg.c == 1 && out_reg.w % 4 == 0 && out_reg.h == out_cls.h) {
@@ -163,19 +230,7 @@ void NCNNDetector::workerLoop() {
                 int feat_h = locations / feat_w;
                 if (feat_w * feat_h != locations) { feat_w = locations; feat_h = 1; }
 
-                auto dist_expect = [&](const float* p) {
-                    float maxv = p[0];
-                    for (int i = 1; i < bins; ++i) maxv = std::max(maxv, p[i]);
-                    float sum = 0.f; float expv;
-                    float expbuf[16];
-                    for (int i = 0; i < bins; ++i) { expv = std::exp(p[i] - maxv); expbuf[i] = expv; sum += expv; }
-                    float v = 0.f;
-                    for (int i = 0; i < bins; ++i) v += (expbuf[i] / sum) * i;
-                    return v;
-                };
-
                 any_head_ok = true;
-                const int topk = 200;
                 int kept = 0;
                 for (int loc = 0; loc < locations; ++loc) {
                     const float* cls_ptr = out_cls.row(loc);
@@ -187,18 +242,18 @@ void NCNNDetector::workerLoop() {
                         if (cls_ptr[c] > max_score) { max_score = cls_ptr[c]; max_idx = c; }
                     }
                     if (max_score > max_score_all) max_score_all = max_score;
-                    if (max_score <= 0.30f) continue;
-                    if (kept++ > topk) continue;
+                    if (max_score <= config.baseScore) continue;
+                    if (kept++ > config.topK) continue;
 
                     int gx = loc % feat_w;
                     int gy = loc / feat_w;
-                    float l = dist_expect(reg_ptr + 0 * bins) * h.stride;
-                    float t = dist_expect(reg_ptr + 1 * bins) * h.stride;
-                    float r = dist_expect(reg_ptr + 2 * bins) * h.stride;
-                    float b = dist_expect(reg_ptr + 3 * bins) * h.stride;
+                    float l = distExpect(reg_ptr + 0 * bins, bins) * h.stride;
+                    float t = distExpect(reg_ptr + 1 * bins, bins) * h.stride;
+                    float r = distExpect(reg_ptr + 2 * bins, bins) * h.stride;
+                    float b = distExpect(reg_ptr + 3 * bins, bins) * h.stride;
 
-                    float scale_x = 640.0f / 320.0f;
-                    float scale_y = 480.0f / 320.0f;
+                    float scale_x = static_cast<float>(config.frameWidth) / config.inputWidth;
+                    float scale_y = static_cast<float>(config.frameHeight) / config.inputHeight;
                     float cx = gx * h.stride;
                     float cy = gy * h.stride;
 
@@ -208,28 +263,21 @@ void NCNNDetector::workerLoop() {
                     d.w = (int)((l + r) * scale_x);
                     d.h = (int)((t + b) * scale_y);
                     d.score = max_score;
-                    const char* label_env = std::getenv("NANOSTREAM_LABELS");
-                    bool show_labels = !(label_env && std::string(label_env) == "0");
-                    if (show_labels && max_idx >= 0 && max_idx < 80) {
+                    if (runtime.showLabels && max_idx >= 0 && max_idx < 80) {
                         d.label = kCoco80[max_idx];
                     } else {
                         d.label = "Target";
                     }
                     d.class_id = max_idx;
                     float area_norm = (d.w * d.h) / frame_area;
-                    float min_score = 0.30f;
-                    if (area_norm < 0.02f) min_score = 0.55f;
-                    else if (area_norm < 0.05f) min_score = 0.45f;
+                    float min_score = config.baseScore;
+                    if (area_norm < config.minScoreSmallAreaThreshold) min_score = config.minScoreSmallArea;
+                    else if (area_norm < config.minScoreMediumAreaThreshold) min_score = config.minScoreMediumArea;
                     if (d.class_id == 0) {
-                        float person_min = 0.55f;
-                        if (const char* v = std::getenv("NANOSTREAM_PERSON_MIN_SCORE")) {
-                            float parsed = std::atof(v);
-                            if (parsed >= 0.0f && parsed <= 1.0f) person_min = parsed;
-                        }
-                        if (min_score < person_min) min_score = person_min;
+                        if (min_score < runtime.personMinScore) min_score = runtime.personMinScore;
                     }
                     if (d.score < min_score) continue;
-                    if (d.w * d.h < 400) continue;
+                    if (d.w * d.h < config.minBoxArea) continue;
                     raw_dets.push_back(d);
                 }
                 continue;
@@ -246,7 +294,7 @@ void NCNNDetector::workerLoop() {
                 float score = 1.0f / (1.0f + std::exp(-max_logit));
                 if (score > max_score_all) max_score_all = score;
 
-                if (score > 0.30f) {
+                if (score > config.baseScore) {
                     int gx = i % out_cls.w;
                     int gy = i / out_cls.w;
                     
@@ -255,8 +303,8 @@ void NCNNDetector::workerLoop() {
                     float r = out_reg.channel(2)[i] * h.stride;
                     float b = out_reg.channel(3)[i] * h.stride;
 
-                    float scale_x = 640.0f / 320.0f;
-                    float scale_y = 480.0f / 320.0f;
+                    float scale_x = static_cast<float>(config.frameWidth) / config.inputWidth;
+                    float scale_y = static_cast<float>(config.frameHeight) / config.inputHeight;
                     float cx = gx * h.stride;
                     float cy = gy * h.stride;
 
@@ -269,114 +317,25 @@ void NCNNDetector::workerLoop() {
                     d.label = "Target";
                     d.class_id = -1;
                     float area_norm = (d.w * d.h) / frame_area;
-                    float min_score = 0.30f;
-                    if (area_norm < 0.02f) min_score = 0.55f;
-                    else if (area_norm < 0.05f) min_score = 0.45f;
+                    float min_score = config.baseScore;
+                    if (area_norm < config.minScoreSmallAreaThreshold) min_score = config.minScoreSmallArea;
+                    else if (area_norm < config.minScoreMediumAreaThreshold) min_score = config.minScoreMediumArea;
                     if (d.score < min_score) continue;
-                    if (d.w * d.h < 400) continue;
+                    if (d.w * d.h < config.minBoxArea) continue;
                     raw_dets.push_back(d);
                 }
             }
         }
 
         // NMS & Smoothing
-        std::sort(raw_dets.begin(), raw_dets.end(), [](const Detection& a, const Detection& b){ return a.score > b.score; });
         std::vector<Detection> final_dets;
-        int per_class_count[80] = {0};
-        const float small_thresh = 0.02f;  // <2% frame area
-        const float medium_thresh = 0.08f; // <8% frame area
-        int person_max = 2;
-        if (const char* v = std::getenv("NANOSTREAM_PERSON_MAX")) {
-            int parsed = std::atoi(v);
-            if (parsed >= 0) person_max = parsed;
-        }
-
-        // Post-filter: suppress small false positives for person
-        int max_person_area = 0;
-        for (const auto& d : final_dets) {
-            if (d.class_id == 0) {
-                int area = d.w * d.h;
-                if (area > max_person_area) max_person_area = area;
-            }
-        }
-
-        if (max_person_area > 0) {
-            float ratio = 0.6f;
-            float min_score = 0.55f;
-            float ar_min = 0.6f;
-            float ar_max = 2.5f;
-            if (const char* v = std::getenv("NANOSTREAM_PERSON_MIN_AREA_RATIO")) {
-                float parsed = std::atof(v);
-                if (parsed >= 0.0f && parsed <= 1.0f) ratio = parsed;
-            }
-            if (const char* v = std::getenv("NANOSTREAM_PERSON_MIN_SCORE")) {
-                float parsed = std::atof(v);
-                if (parsed >= 0.0f && parsed <= 1.0f) min_score = parsed;
-            }
-            if (const char* v = std::getenv("NANOSTREAM_PERSON_AR_MIN")) {
-                float parsed = std::atof(v);
-                if (parsed > 0.0f) ar_min = parsed;
-            }
-            if (const char* v = std::getenv("NANOSTREAM_PERSON_AR_MAX")) {
-                float parsed = std::atof(v);
-                if (parsed > 0.0f) ar_max = parsed;
-            }
-            std::vector<Detection> filtered;
-            filtered.reserve(final_dets.size());
-            for (const auto& d : final_dets) {
-                if (d.class_id == 0) {
-                    float ar = d.h > 0 ? (float)d.h / (float)d.w : 0.0f;
-                    if (d.w * d.h < (int)(max_person_area * ratio)) continue;
-                    if (d.score < min_score) continue;
-                    if (ar < ar_min || ar > ar_max) continue;
-                }
-                filtered.push_back(d);
-            }
-            final_dets.swap(filtered);
-        }
-        for (const auto& d : raw_dets) {
-            if (final_dets.size() >= 6) break;
-            if (d.class_id >= 0 && d.class_id < 80) {
-                float area_norm = (d.w * d.h) / frame_area;
-                int cap = (area_norm < small_thresh) ? 1 : (area_norm < medium_thresh ? 2 : 3);
-                if (d.class_id == 0 && person_max < cap) cap = person_max;
-                if (per_class_count[d.class_id] >= cap) continue;
-            }
-            bool skip = false;
-            for (const auto& f : final_dets) {
-                if (d.class_id >= 0 && f.class_id >= 0 && d.class_id != f.class_id) continue;
-                if (iou(d, f) > 0.3f) { skip = true; break; }
-            }
-            if (!skip) {
-                if (d.class_id >= 0 && d.class_id < 80) per_class_count[d.class_id] += 1;
-                final_dets.push_back(d);
-            }
-        }
+        applyPostFilter(runtime, raw_dets, final_dets, frame_area);
 
         auto lat = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start).count();
         frame_id++;
         if (!final_dets.empty()) {
             // Multi-target EMA smoothing with IOU association
-            std::vector<Detection> smoothed;
-            smoothed.reserve(final_dets.size());
-            for (const auto& cur : final_dets) {
-                const Detection* best = nullptr;
-                float best_iou = 0.0f;
-                for (const auto& prev : prev_detections) {
-                    if (cur.class_id >= 0 && prev.class_id >= 0 && cur.class_id != prev.class_id) continue;
-                    float v = iou(cur, prev);
-                    if (v > best_iou) { best_iou = v; best = &prev; }
-                }
-                Detection d = cur;
-                if (best && best_iou >= 0.3f) {
-                    d.x = (int)(alpha * cur.x + (1.0f - alpha) * best->x);
-                    d.y = (int)(alpha * cur.y + (1.0f - alpha) * best->y);
-                    d.w = (int)(alpha * cur.w + (1.0f - alpha) * best->w);
-                    d.h = (int)(alpha * cur.h + (1.0f - alpha) * best->h);
-                }
-                smoothed.push_back(d);
-            }
-            final_dets.swap(smoothed);
+            smoothDetections(final_dets);
             std::cout << "\r[NanoStream] Detected: " << final_dets.size() << " | Lat: " << lat << "ms    " << std::flush;
             std::lock_guard<std::mutex> lock(result_mutex);
             current_detections = final_dets;

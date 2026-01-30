@@ -1,6 +1,4 @@
-#include "pipeline_manager.hpp"
 #include <iostream>
-#include <sstream>
 #include <string>
 #include <algorithm>
 #include <cstdlib>
@@ -8,6 +6,70 @@
 #include <gst/app/gstappsink.h>
 #include <cairo.h>
 #include <cairo-gobject.h>
+
+#include "pipeline_manager.hpp"
+#include "runtime_config.hpp"
+
+namespace {
+
+std::string getDmabufDisableFlagPath() {
+    const char* home = std::getenv("HOME");
+    if (home) {
+        return std::string(home) + "/.nanostream_dmabuf_disabled";
+    }
+    return ".nanostream_dmabuf_disabled";
+}
+
+void writeDmabufDisableFlag() {
+    std::ofstream flag(getDmabufDisableFlagPath());
+}
+
+std::string buildPipelineString(const PipelineManager::PipelineConfig& config) {
+    const std::string base_caps =
+        "video/x-raw,width=" + std::to_string(config.width) +
+        ",height=" + std::to_string(config.height) +
+        ",framerate=" + std::to_string(config.framerate_num) +
+        "/" + std::to_string(config.framerate_den);
+    const std::string ai_caps =
+        "video/x-raw,format=RGB,width=" + std::to_string(config.ai_width) +
+        ",height=" + std::to_string(config.ai_height);
+
+    const std::string dmabuf_pipeline =
+        "libcamerasrc ! " + base_caps + ",format=NV12 ! tee name=t "
+        "t. ! queue max-size-buffers=" + std::to_string(config.stream_queue_max) + " leaky=downstream ! "
+        "v4l2convert output-io-mode=dmabuf-import ! video/x-raw,format=NV12 ! "
+        "v4l2h264enc output-io-mode=dmabuf-import ! h264parse config-interval=1 ! "
+        "video/x-h264,stream-format=byte-stream ! udpsink host=127.0.0.1 port=" + std::to_string(config.stream_port) + " sync=false async=false "
+        "t. ! queue leaky=downstream max-size-buffers=" + std::to_string(config.ai_queue_max) + " ! videoscale ! videoconvert ! "
+        + ai_caps + " ! appsink name=ncnn_sink sync=false async=false emit-signals=true";
+
+    const std::string dmabuf_direct_pipeline =
+        "libcamerasrc ! " + base_caps + ",format=NV12 ! tee name=t "
+        "t. ! queue max-size-buffers=" + std::to_string(config.stream_queue_max) + " leaky=downstream ! "
+        "v4l2h264enc output-io-mode=dmabuf-import ! h264parse config-interval=1 ! "
+        "video/x-h264,stream-format=byte-stream ! udpsink host=127.0.0.1 port=" + std::to_string(config.stream_port) + " sync=false async=false "
+        "t. ! queue leaky=downstream max-size-buffers=" + std::to_string(config.ai_queue_max) + " ! videoscale ! videoconvert ! "
+        + ai_caps + " ! appsink name=ncnn_sink sync=false async=false emit-signals=true";
+
+    const std::string software_pipeline =
+        "libcamerasrc ! " + base_caps + " ! tee name=t "
+        "t. ! queue max-size-buffers=" + std::to_string(config.stream_queue_max) + " leaky=downstream ! "
+        "videoconvert ! video/x-raw,format=BGRx ! cairooverlay name=osd ! videoconvert ! video/x-raw,format=I420 ! "
+        "x264enc speed-preset=ultrafast tune=zerolatency bitrate=1000 threads=4 ! h264parse config-interval=1 ! "
+        "video/x-h264,stream-format=byte-stream ! udpsink host=127.0.0.1 port=" + std::to_string(config.stream_port) + " sync=false async=false "
+        "t. ! queue leaky=downstream max-size-buffers=" + std::to_string(config.ai_queue_max) + " ! videoscale ! videoconvert ! "
+        + ai_caps + " ! appsink name=ncnn_sink sync=false async=false emit-signals=true";
+
+    if (config.useDmabuf && config.useDirect) {
+        return dmabuf_direct_pipeline;
+    }
+    if (config.useDmabuf) {
+        return dmabuf_pipeline;
+    }
+    return software_pipeline;
+}
+
+}
 
 PipelineManager::PipelineManager() {}
 
@@ -17,6 +79,12 @@ PipelineManager::~PipelineManager() {
 
 void PipelineManager::draw_overlay(cairo_t *cr) {
     std::vector<Detection> dets = detector.getDetections();
+
+    cairo_surface_t* surface = cairo_get_target(cr);
+    if (surface && cairo_surface_get_type(surface) == CAIRO_SURFACE_TYPE_IMAGE) {
+        overlay_width = cairo_image_surface_get_width(surface);
+        overlay_height = cairo_image_surface_get_height(surface);
+    }
     
     // 设置字体和基础绘图属性
     cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
@@ -30,10 +98,12 @@ void PipelineManager::draw_overlay(cairo_t *cr) {
         int h = det.h;
         if (w <= 0 || h <= 0) continue;
 
-        x = std::max(0, std::min(x, 639));
-        y = std::max(0, std::min(y, 479));
-        w = std::min(w, 640 - x);
-        h = std::min(h, 480 - y);
+        int max_w = overlay_width > 0 ? overlay_width : 640;
+        int max_h = overlay_height > 0 ? overlay_height : 480;
+        x = std::max(0, std::min(x, max_w - 1));
+        y = std::max(0, std::min(y, max_h - 1));
+        w = std::min(w, max_w - x);
+        h = std::min(h, max_h - y);
         if (w <= 0 || h <= 0) continue;
 
         // 画绿色边框
@@ -44,7 +114,7 @@ void PipelineManager::draw_overlay(cairo_t *cr) {
         // 写标签背景
         int label_x = x;
         int label_y = std::max(0, y - 25);
-        int label_w = std::min(100, 640 - label_x);
+        int label_w = std::min(100, max_w - label_x);
         if (label_w <= 0) continue;
         cairo_rectangle(cr, label_x, label_y, label_w, 25);
         cairo_fill(cr);
@@ -58,14 +128,9 @@ void PipelineManager::draw_overlay(cairo_t *cr) {
 
 gboolean PipelineManager::on_bus_message(GstBus *bus, GstMessage *message, gpointer user_data) {
     auto* self = static_cast<PipelineManager*>(user_data);
-    auto write_disable_flag = []() {
-        const char* home = std::getenv("HOME");
-        std::string disable_flag = home ? std::string(home) + "/.nanostream_dmabuf_disabled" : std::string(".nanostream_dmabuf_disabled");
-        std::ofstream flag(disable_flag);
-    };
     if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_ERROR && self->use_dmabuf_config && self->dmabuf_active) {
-        const char* debug_env = std::getenv("NANOSTREAM_DEBUG");
-        bool debug = (debug_env && std::string(debug_env) == "1");
+        const RuntimeConfig& runtime = getRuntimeConfig();
+        bool debug = runtime.debug;
         GError *err = nullptr;
         gchar *dbg = nullptr;
         gst_message_parse_error(message, &err, &dbg);
@@ -86,7 +151,7 @@ gboolean PipelineManager::on_bus_message(GstBus *bus, GstMessage *message, gpoin
             self->dmabuf_active = false;
             self->dmabuf_disabled = true;
             std::cout << "[NanoStream] DMABUF disabled on this platform. Use NANOSTREAM_DMABUF=0." << std::endl;
-            write_disable_flag();
+            writeDmabufDisableFlag();
             self->rebuildSoftwarePipeline();
         }
     }
@@ -101,15 +166,45 @@ static void on_draw_wrapper(GstElement *overlay, cairo_t *cr, guint64 timestamp,
     static_cast<PipelineManager*>(user_data)->draw_overlay(cr);
 }
 
+bool PipelineManager::applyPipeline(const std::string& pipeline_desc) {
+    GError *error = nullptr;
+    pipeline = gst_parse_launch(pipeline_desc.c_str(), &error);
+    if (error) {
+        std::cerr << "[Error] " << error->message << std::endl;
+        g_error_free(error);
+        return false;
+    }
+
+    GstElement *osd = gst_bin_get_by_name(GST_BIN(pipeline), "osd");
+    if (osd) {
+        g_signal_connect(osd, "draw", G_CALLBACK(on_draw_wrapper), this);
+        gst_object_unref(osd);
+    }
+
+    app_sink = gst_bin_get_by_name(GST_BIN(pipeline), "ncnn_sink");
+    if (app_sink) {
+        g_signal_connect(app_sink, "new-sample", G_CALLBACK(on_new_sample_wrapper), this);
+        gst_object_unref(app_sink);
+        app_sink = nullptr;
+    }
+
+    if (!bus) {
+        bus = gst_element_get_bus(pipeline);
+        gst_bus_add_watch(bus, on_bus_message, this);
+    }
+
+    return true;
+}
+
 bool PipelineManager::buildPipeline() {
-    const char* dmabuf_env = std::getenv("NANOSTREAM_DMABUF");
-    bool use_dmabuf = (dmabuf_env && std::string(dmabuf_env) == "1");
+    const RuntimeConfig& runtime = getRuntimeConfig();
+    bool use_dmabuf = runtime.useDmabuf;
     use_dmabuf_config = use_dmabuf;
     dmabuf_direct_tried = false;
-    const char* home = std::getenv("HOME");
-    std::string disable_flag = home ? std::string(home) + "/.nanostream_dmabuf_disabled" : std::string(".nanostream_dmabuf_disabled");
+    config.useDmabuf = use_dmabuf;
+    config.useDirect = false;
     if (use_dmabuf) {
-        std::ifstream flag(disable_flag);
+        std::ifstream flag(getDmabufDisableFlagPath());
         if (flag.good()) {
             dmabuf_disabled = true;
         }
@@ -122,43 +217,11 @@ bool PipelineManager::buildPipeline() {
 }
 
 bool PipelineManager::buildPipelineInternal(bool use_dmabuf, bool use_direct) {
-    std::stringstream ss;
-
-    // STABLE ENGINE: x264enc + OSD + 640x480
-    // Force BGRx for Cairo OSD, then convert to I420 for encoder
-    const std::string dmabuf_pipeline =
-        "libcamerasrc ! video/x-raw,width=640,height=480,framerate=15/1,format=NV12 ! tee name=t "
-        "t. ! queue max-size-buffers=10 leaky=downstream ! "
-        "v4l2convert output-io-mode=dmabuf-import ! video/x-raw,format=NV12 ! "
-        "v4l2h264enc output-io-mode=dmabuf-import ! h264parse config-interval=1 ! "
-        "video/x-h264,stream-format=byte-stream ! udpsink host=127.0.0.1 port=5004 sync=false async=false "
-        "t. ! queue leaky=downstream max-size-buffers=2 ! videoscale ! videoconvert ! "
-        "video/x-raw,format=RGB,width=320,height=320 ! appsink name=ncnn_sink sync=false async=false emit-signals=true";
-
-    const std::string dmabuf_direct_pipeline =
-        "libcamerasrc ! video/x-raw,width=640,height=480,framerate=15/1,format=NV12 ! tee name=t "
-        "t. ! queue max-size-buffers=10 leaky=downstream ! "
-        "v4l2h264enc output-io-mode=dmabuf-import ! h264parse config-interval=1 ! "
-        "video/x-h264,stream-format=byte-stream ! udpsink host=127.0.0.1 port=5004 sync=false async=false "
-        "t. ! queue leaky=downstream max-size-buffers=2 ! videoscale ! videoconvert ! "
-        "video/x-raw,format=RGB,width=320,height=320 ! appsink name=ncnn_sink sync=false async=false emit-signals=true";
-
-    const std::string software_pipeline =
-        "libcamerasrc ! video/x-raw,width=640,height=480,framerate=15/1 ! tee name=t "
-        "t. ! queue max-size-buffers=10 leaky=downstream ! "
-        "videoconvert ! video/x-raw,format=BGRx ! cairooverlay name=osd ! videoconvert ! video/x-raw,format=I420 ! "
-        "x264enc speed-preset=ultrafast tune=zerolatency bitrate=1000 threads=4 ! h264parse config-interval=1 ! "
-        "video/x-h264,stream-format=byte-stream ! udpsink host=127.0.0.1 port=5004 sync=false async=false "
-        "t. ! queue leaky=downstream max-size-buffers=2 ! videoscale ! videoconvert ! "
-        "video/x-raw,format=RGB,width=320,height=320 ! appsink name=ncnn_sink sync=false async=false emit-signals=true";
-
-    if (use_dmabuf && use_direct) {
-        ss << dmabuf_direct_pipeline;
-    } else if (use_dmabuf) {
-        ss << dmabuf_pipeline;
-    } else {
-        ss << software_pipeline;
-    }
+    const RuntimeConfig& runtime = getRuntimeConfig();
+    PipelineConfig local_config = config;
+    local_config.useDmabuf = use_dmabuf;
+    local_config.useDirect = use_direct;
+    const std::string pipeline_desc = buildPipelineString(local_config);
 
     if (use_dmabuf && use_direct) {
         std::cout << "[NanoStream] Launching DMABUF Direct Pipeline..." << std::endl;
@@ -170,10 +233,7 @@ bool PipelineManager::buildPipelineInternal(bool use_dmabuf, bool use_direct) {
 
     GError *error = nullptr;
     bool dmabuf_fallback = false;
-    pipeline = gst_parse_launch(ss.str().c_str(), &error);
-    if (error) {
-        std::cerr << "[Error] " << error->message << std::endl;
-        g_error_free(error);
+    if (!applyPipeline(pipeline_desc)) {
         if (use_dmabuf && !use_direct) {
             std::cout << "[NanoStream] DMABUF pipeline failed, trying direct DMABUF pipeline." << std::endl;
             return buildPipelineInternal(true, true);
@@ -182,18 +242,15 @@ bool PipelineManager::buildPipelineInternal(bool use_dmabuf, bool use_direct) {
             std::cout << "[NanoStream] DMABUF pipeline failed, falling back to software pipeline." << std::endl;
             dmabuf_fallback = true;
             dmabuf_disabled = true;
-            ss.str("");
-            ss.clear();
-            ss << software_pipeline;
-            error = nullptr;
-            pipeline = gst_parse_launch(ss.str().c_str(), &error);
-            if (error) {
-                std::cerr << "[Error] " << error->message << std::endl;
-                g_error_free(error);
+            PipelineConfig software_config = local_config;
+            software_config.useDmabuf = false;
+            software_config.useDirect = false;
+            const std::string software_desc = buildPipelineString(software_config);
+            if (!applyPipeline(software_desc)) {
                 return false;
             }
         }
-    }
+    } 
 
     dmabuf_active = use_dmabuf && !dmabuf_fallback;
     if (use_dmabuf) {
@@ -203,11 +260,6 @@ bool PipelineManager::buildPipelineInternal(bool use_dmabuf, bool use_direct) {
     }
 
     if (use_dmabuf && use_direct) {
-        auto write_disable_flag = []() {
-            const char* home = std::getenv("HOME");
-            std::string disable_flag = home ? std::string(home) + "/.nanostream_dmabuf_disabled" : std::string(".nanostream_dmabuf_disabled");
-            std::ofstream flag(disable_flag);
-        };
         last_sample_us.store(0);
         std::thread([this]() {
             std::this_thread::sleep_for(std::chrono::seconds(3));
@@ -217,34 +269,15 @@ bool PipelineManager::buildPipelineInternal(bool use_dmabuf, bool use_direct) {
                 std::cout << "[NanoStream] DMABUF direct pipeline produced no samples, falling back to software." << std::endl;
                 dmabuf_active = false;
                 dmabuf_disabled = true;
-                const char* home = std::getenv("HOME");
-                std::string disable_flag = home ? std::string(home) + "/.nanostream_dmabuf_disabled" : std::string(".nanostream_dmabuf_disabled");
-                std::ofstream flag(disable_flag);
+                writeDmabufDisableFlag();
                 rebuildSoftwarePipeline();
             }
         }).detach();
     }
 
-    GstElement *osd = gst_bin_get_by_name(GST_BIN(pipeline), "osd");
-    if (osd) {
-        g_signal_connect(osd, "draw", G_CALLBACK(on_draw_wrapper), this);
-        gst_object_unref(osd);
-    }
-
-    app_sink = gst_bin_get_by_name(GST_BIN(pipeline), "ncnn_sink");
-    g_signal_connect(app_sink, "new-sample", G_CALLBACK(on_new_sample_wrapper), this);
-
-    if (!bus) {
-        bus = gst_element_get_bus(pipeline);
-        gst_bus_add_watch(bus, on_bus_message, this);
-    }
-
-    const char* int8_env = std::getenv("NANOSTREAM_INT8");
-    bool use_int8 = (int8_env && std::string(int8_env) == "1");
-    std::string int8_param = "models/nanodet_m-int8.param";
-    std::string int8_bin = "models/nanodet_m-int8.bin";
-    if (const char* v = std::getenv("NANOSTREAM_INT8_PARAM")) int8_param = v;
-    if (const char* v = std::getenv("NANOSTREAM_INT8_BIN")) int8_bin = v;
+    bool use_int8 = runtime.useInt8;
+    std::string int8_param = runtime.int8Param;
+    std::string int8_bin = runtime.int8Bin;
     if (use_int8) {
         std::ifstream p(int8_param);
         std::ifstream b(int8_bin);
@@ -265,31 +298,13 @@ bool PipelineManager::buildPipelineInternal(bool use_dmabuf, bool use_direct) {
 
 void PipelineManager::rebuildSoftwarePipeline() {
     dmabuf_active = false;
-    if (pipeline) {
-        gst_element_set_state(pipeline, GST_STATE_NULL);
-        if (bus) {
-            gst_object_unref(bus);
-            bus = nullptr;
-        }
-        gst_object_unref(pipeline);
-        pipeline = nullptr;
-    }
-
+    resetPipeline();
     buildPipelineInternal(false, false);
     start();
 }
 
 void PipelineManager::rebuildDmabufDirectPipeline() {
-    if (pipeline) {
-        gst_element_set_state(pipeline, GST_STATE_NULL);
-        if (bus) {
-            gst_object_unref(bus);
-            bus = nullptr;
-        }
-        gst_object_unref(pipeline);
-        pipeline = nullptr;
-    }
-
+    resetPipeline();
     buildPipelineInternal(true, true);
     start();
 }
@@ -299,6 +314,10 @@ void PipelineManager::start() {
 }
 
 void PipelineManager::stop() {
+    resetPipeline();
+}
+
+void PipelineManager::resetPipeline() {
     if (pipeline) {
         gst_element_set_state(pipeline, GST_STATE_NULL);
         if (bus) {
@@ -308,6 +327,7 @@ void PipelineManager::stop() {
         gst_object_unref(pipeline);
         pipeline = nullptr;
     }
+    caps_logged = false;
 }
 
 GstFlowReturn PipelineManager::on_new_sample_wrapper(GstElement *sink, gpointer user_data) {
@@ -315,7 +335,6 @@ GstFlowReturn PipelineManager::on_new_sample_wrapper(GstElement *sink, gpointer 
 }
 
 GstFlowReturn PipelineManager::on_new_sample(GstElement *sink) {
-    static bool caps_logged = false;
     GstSample *sample;
     g_signal_emit_by_name(sink, "pull-sample", &sample);
     if (sample) {
