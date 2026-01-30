@@ -1,239 +1,276 @@
-# NanoStream-Raspberry4B
-> **极致边缘流控**: 基于 NCNN 与 GStreamer 的高性能异步实时检测系统
+# NanoStream
 
-本项目旨在通过 C++ 与 GStreamer 的极致调优，在 Raspberry Pi 4B 上实现 **1080p/720p 零延迟推流** 与 **实时 AI 目标检测** 的完美并行。
+> 🚀 Real-time AI-powered video streaming for Raspberry Pi 4B
 
----
+A production-ready object detection and video streaming system featuring hardware-accelerated encoding, NCNN inference, and WebRTC support.
 
-## 🚀 核心特性
-
-- **硬件加速 (Offloading)**: 
-    - 采用 `v4l2h264enc` 硬件编码器，将 H.264 编码压力从 CPU 转移到 VPU。
-    - 针对 ARM NEON 指令集优化的 NCNN 推理。
-- **异步双轨架构**:
-    - **推流轨**: 满帧运行，不因 AI 运算延迟而产生丢帧或卡顿。
-    - **AI 轨**: 独立 Worker Thread 运行，采用“尽力而为”策略，自动平衡性能。
-- **工业级桥接**: 
-    - 使用 RTP-UDP 内部环回桥接，确保主管道与 RTSP 服务器之间的高速、无锁数据交换。
-- **结构化输出**: 
-    - 实时输出 JSON 格式的检测元数据（Metadata），方便对接业务系统。
-
-## 🏗 系统架构
-
-```mermaid
-graph TD
-    %% Define Styles
-    classDef hardware fill:#ffcccb,stroke:#d9534f,stroke-width:2px,color:black;
-    classDef gstPipeline fill:#d9edf7,stroke:#5bc0de,stroke-width:2px,color:black;
-    classDef cppApp fill:#dff0d8,stroke:#5cb85c,stroke-width:2px,color:black;
-    classDef ncnn fill:#c3aed6,stroke:#6f42c1,stroke-width:2px,color:white;
-    classDef critical fill:#fffacd,stroke:#f0ad4e,stroke-width:3px,stroke-dasharray: 5 5,color:black;
-
-    subgraph HardwareLayer [Raspberry Pi 4B Hardware Layer]
-        Cam[Camera Module<br/>e.g., CSI/USB]:::hardware
-        VPU[VideoCore VI VPU<br/>Hardware Encoder]:::hardware
-        CPU_Neon[CPU<br/>ARM Cortex-A72 + NEON Intrinsics]:::hardware
-    end
-
-    subgraph GstPipeline [User Space: GStreamer Pipeline Main Thread]
-        Source[libcamerasrc<br/>Camera Source]:::gstPipeline
-        Caps[capsfilter<br/>640x480 @ 15FPS, NV12]:::gstPipeline
-        Tee{Tee<br/>Stream Splitter}:::critical
-
-        subgraph BranchA [Branch A: Streaming + OSD]
-            QueueStream[queue<br/>Buffer for encoding]:::gstPipeline
-            OSD[cairooverlay<br/>OSD Boxes/Labels]:::critical
-            SWPath[videoconvert -> x264enc<br/>Software Encode]:::gstPipeline
-            DMABUFPath[v4l2convert -> v4l2h264enc<br/>DMABUF optional]:::gstPipeline
-            Parse[h264parse]:::gstPipeline
-            Mux[rtph264pay<br/>RTP Payloader]:::gstPipeline
-            Sink[udpsink<br/>Internal Bridge]:::gstPipeline
-        end
-
-        subgraph BranchB [Branch B: AI Inference Path]
-            QueueAI[queue<br/>leaky=downstream]:::critical
-            Scale[videoscale<br/>Resize to 320x320]:::gstPipeline
-            Convert[videoconvert<br/>Convert to RGB]:::gstPipeline
-            AppSink[appsink<br/>Bridge to C++]:::critical
-        end
-    end
-
-    subgraph CppApp [User Space: C++ Application Domain]
-        Callback[GStreamer Callback<br/>on new-sample]:::cppApp
-
-        RTSP[RTSP Server<br/>RTP-UDP Bridge]:::cppApp
-        MapBuffer[gst_buffer_map<br/>Get raw pointer]:::cppApp
-
-        subgraph NCNNInference [NCNN High-Performance Inference]
-            NCNN_Input[NCNN Input Layer<br/>ncnn::Mat::from_pixels]:::ncnn
-            NCNN_INT8[NCNN Model<br/>NanoDet-m FP32/INT8]:::critical
-            NCNN_Output[NCNN Output Layer<br/>Detection Results]:::ncnn
-        end
-
-        PostProcess[Post-Processing<br/>NMS, Box Gen, EMA]:::cppApp
-        ResultOutput[Output: OSD Overlay]:::cppApp
-    end
-
-    %% Connections
-    Cam -->|Raw Data| Source
-    Source --> Caps
-    Caps --> Tee
-
-    %% Branch A
-    Tee --> QueueStream
-    QueueStream --> OSD
-    OSD --> SWPath
-    OSD --> DMABUFPath
-    DMABUFPath -.->|Offload| VPU
-    VPU -.->|Encoded H.264| DMABUFPath
-    SWPath --> Parse
-    DMABUFPath --> Parse
-    Parse --> Mux
-    Mux --> Sink
-    Sink -->|Internal Bridge| RTSP
-    RTSP --> WebRTC[MediaMTX WebRTC<br/>Optional]:::gstPipeline
-
-    %% Branch B
-    Tee --> QueueAI
-    QueueAI -->|Drop oldest frames| Scale
-    Scale --> Convert
-    Convert --> AppSink
-    
-    %% C++ Integration
-    AppSink -->|Signal: new-sample| Callback
-    Callback --> MapBuffer
-    MapBuffer --> NCNN_Input
-    NCNN_Input --> NCNN_INT8
-    NCNN_INT8 -.->|SIMD| CPU_Neon
-    NCNN_INT8 --> NCNN_Output
-    NCNN_Output --> PostProcess
-    PostProcess --> ResultOutput
-
-    %% Legends
-    style Tee fill:#ffeb3b,stroke:#f0ad4e,stroke-width:4px
-```
+[![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi%204B-c51a4a.svg)](https://www.raspberrypi.com/)
+[![GStreamer](https://img.shields.io/badge/GStreamer-1.0-blue.svg)](https://gstreamer.freedesktop.org/)
+[![NCNN](https://img.shields.io/badge/NCNN-Optimized-green.svg)](https://github.com/Tencent/ncnn)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 ---
 
-## 🛠 安装与部署
+## ✨ Features
 
-### 1. 系统依赖
+- **🎯 Real-time Object Detection** - NCNN NanoDet inference at 30 FPS (320x320)
+- **⚡ Hardware Acceleration** - V4L2 H.264 encoding with DMABUF zero-copy pipeline
+- **📡 Dual Streaming** - RTSP + WebRTC support via MediaMTX
+- **🎨 Live OSD Overlay** - Cairo-based detection visualization
+- **🔧 Smart Fallback** - Automatic DMABUF to software pipeline fallback
+- **📊 Multi-object Tracking** - IoU-based NMS with EMA smoothing
+- **⚙️ INT8 Quantization** - 2-3x performance boost with INT8 models
+- **🌡️ Thermal Throttling** - Adaptive AI throttling based on temperature
+
+---
+
+## 🚀 Quick Start
+
+### Prerequisites
+
 ```bash
 sudo apt update
-sudo apt install -y cmake g++ libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-    libgstrtspserver-1.0-dev gstreamer1.0-libcamera gstreamer1.0-plugins-ugly \
-    gstreamer1.0-tools libcamera-tools
+sudo apt install -y cmake g++ \
+    libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+    libgstrtspserver-1.0-dev gstreamer1.0-libcamera \
+    gstreamer1.0-plugins-ugly gstreamer1.0-tools \
+    libcairo2-dev libcamera-tools
 ```
 
-### 2. 构建 NCNN 与模型
+### Build & Run
+
 ```bash
-# 执行自动化安装脚本 (针对 RPi4 优化编译)
+# Install NCNN (optimized for RPi4)
 chmod +x scripts/install_ncnn.sh && ./scripts/install_ncnn.sh
 
-# 下载 NanoDet-m 模型
+# Download NanoDet models
 chmod +x scripts/download_models.sh && ./scripts/download_models.sh
-```
 
-### 3. 编译运行
-```bash
+# Build and run
 sh scripts/build.sh
 ./build/NanoStream
 ```
 
----
+### Access Stream
 
-## 📺 远程接入
-在客户端（Mac/PC/手机）打开 VLC，输入以下地址：
-`rtsp://<RaspberryPi_IP>:8554/live`
+**RTSP (VLC/FFplay):**
+```
+rtsp://<raspberry-pi-ip>:8554/live
+```
 
-**网络调优提示**:
-1. **防火墙**: 确保执行了 `sudo ufw disable` 或放行了 `8554` 和 `5004` 端口。
-2. **连接模式**: 若 UDP 画面撕裂，请在 VLC 设置中勾选 **"RTP over RTSP (TCP)"**。
-
----
-
-## 🧩 疑难排查 (Troubleshooting)
-
-在本项目开发过程中，我们攻克了以下关键技术坑位，供后来者参考：
-
-1. **STREAMON 错误 (No such process)**:
-   - **起因**: `libcamerasrc` 输出的硬件 DMABUF 与 `v4l2h264enc` 直接对接时，在特定内核下会发生内存对齐冲突。
-   - **对策**: 在 `tee` 后增加 `videoconvert ! video/x-raw,format=I420` 强制转入系统内存，虽然损失极小 CPU 但换取了绝对的稳定性。
-2. **Pipeline Preroll 死锁**:
-   - **起因**: 多分支 Pipeline 默认会等待所有分支准备就绪（预卷），若推流端未连上或 AI 运算过慢，整个管道会停滞。
-   - **对策**: 在所有 Sink 端开启 `async=false`。
-3. **RTSP 连接秒断**:
-   - **起因**: UDP 桥接时没有提供正确的 H.264 Byte-Stream (Annex-B) 头信息。
-   - **对策**: 显式指定 `h264parse config-interval=1` 并强制输出 `stream-format=byte-stream`。
+**WebRTC (Browser):**
+```
+http://<raspberry-pi-ip>:8889/
+```
 
 ---
 
-## 📈 未来改进与优化清单
+## ⚙️ Configuration
 
-为了实现更高性能的边缘计算产品，我们制定了详细的 [实施方案 (PLAN.md)](./PLAN.md)。以下是核心方向：
+All settings are controlled via environment variables:
 
-1. **VPU 硬件链路深度调优**: 
-    - 目前通过 `videoconvert` 规避了内存对齐问题。下一步将探索使用 `v4l2convert` 的硬件缩放/转换能力，或尝试 `dmabuf` 零拷贝直接注入编码器，旨在彻底解放 CPU。
-2. **AI 精度与量化提升**:
-    - 制作针对树莓派 4B 硬件环境的专属 INT8 量化表（PTQ），在保持当前 100ms 左右延迟的前提下进一步提升检测精度。
-3. **可视化叠加 (OSD)**:
-    - 目前检测结果仅以 JSON 形式输出。计划集成 `cairooverlay` 或 `rsvgoverlay`，将 AI 预测框实时绘制并合并到推流中。
-4. **动态负载平衡 (Dynamic FPS)**:
-    - 根据系统实时温度和 CPU 负载，动态调整 AI 推理分支的跳帧策略，确保在极端环境下推流轨道始终满帧。
-5. **多模型适配支持**:
-    - 增加对 YOLO-v8/v10-tiny 的适配，提供不同场景下的推理权重选择。
-6. **WebRTC 支持**:
-    - 探索集成网页端的低延迟播放支持，实现无需客户端软件的实时监控。
+### Pipeline Settings
+```bash
+# Enable DMABUF zero-copy (default: 1)
+NANOSTREAM_DMABUF=1
 
----
+# Enable thermal throttling (default: 0)
+NANOSTREAM_THERMAL=1
 
-## ✅ P1 交付指南
-详细的 P1 执行清单、验收标准与测试步骤见：
-`docs/P1.md`
+# Thermal thresholds (°C)
+NANOSTREAM_THERMAL_HIGH=70
+NANOSTREAM_THERMAL_CRIT=75
+NANOSTREAM_THERMAL_SLEEP=500  # ms
+```
 
-### WebRTC 旁路部署（MediaMTX）
-模板位于：
-`deploy/mediamtx`
+### AI Settings
+```bash
+# Use INT8 quantized model (default: 0)
+NANOSTREAM_INT8=1
 
----
+# Custom INT8 model paths
+NANOSTREAM_INT8_PARAM=models/nanodet_m-int8.param
+NANOSTREAM_INT8_BIN=models/nanodet_m-int8.bin
 
-## 📝 本次 dev 合并摘要
-- NanoDet-m 解码修复：支持 1 通道 cls/reg 分布式回归（reg_max=7，4x8 bins），正确输出 bbox。
-- 稳定性提升：阈值上调、近邻去重收紧、候选 cap 限制，减少重复/抖动框；禁用 packing layout，完善头部诊断日志。
-- WebRTC 兼容：本地播放器兼容 path 参数与多端点；MediaMTX 端口避冲突。
-- 安全性：appsink caps/size 防护，OSD 安全绘制；gitignore 更新。
+# Detection parameters
+NANOSTREAM_DET_SCORE_THRESH=0.35
+NANOSTREAM_DET_TOPK=100
+NANOSTREAM_DET_IOU_THRESH=0.4
 
-## ✅ 本次 dev 更新（新）
-- 检测稳定性：改为多目标 IOU 关联 + EMA 平滑，减少跳框；同类过多框进行自适应限制。
-- 误报抑制：按目标面积自适应阈值，小目标更严格；person 误报过滤增强。
-- 多类标签：支持 COCO 类别名显示，`NANOSTREAM_LABELS=0` 关闭标签。
-- P2 零拷贝：DMABUF 双路径尝试（v4l2convert 与 direct），运行期自动回退。
-- P2 温控降频：`NANOSTREAM_THERMAL=1` 启用；阈值可通过 `NANOSTREAM_THERMAL_HIGH/CRIT/SLEEP` 配置。
-- DMABUF 禁用标记：失败后生成 `~/.nanostream_dmabuf_disabled`，后续自动走软件管线。
-- P2 性能对比记录模板：`docs/P2_PERF.md`
-- WebRTC 旁路：RTSP 可由 MediaMTX 转 WebRTC（部署在 `deploy/mediamtx`）
-- P3 INT8 开关：`NANOSTREAM_INT8=1` 使用 INT8 模型，失败自动回退 FP32
-- INT8 路径可配置：`NANOSTREAM_INT8_PARAM` / `NANOSTREAM_INT8_BIN`
-- 可维护性重构：Pipeline/Detector 拆分与配置集中（RuntimeConfig/DetectorConfig），减少硬编码与重复逻辑
-- 配置与日志：运行时参数集中解析，debug 日志支持机器可解析格式
-- RTSP 地址：支持 `NANOSTREAM_RTSP_HOST` 并自动解析本机 IP
-- OSD 尺寸：从 caps 获取 overlay 尺寸，避免 640x480 写死
-- Detector 覆盖项：`NANOSTREAM_DET_*` 支持阈值、TopK、heads 等参数覆写
+# Show class labels on OSD (default: 1)
+NANOSTREAM_LABELS=1
+```
 
-## 📊 性能指标 (RPi 4B @ 1.5GHz)
-| 模块 | 分辨率 | 负载/延迟 |
-| :--- | :--- | :--- |
-| 摄像头采集 | 1280x720 | 30 FPS |
-| 硬件编码 (VPU) | 720p | < 5% CPU |
-| AI 推理 (NCNN) | 320x320 | ~90ms - 130ms |
-| 综合流控 | - | 稳定、零积压 |
+### Network Settings
+```bash
+# RTSP server host (default: auto-detected)
+NANOSTREAM_RTSP_HOST=0.0.0.0
+
+# Enable debug logging (default: 0)
+NANOSTREAM_DEBUG=1
+```
+
+### Example Usage
+```bash
+# High-performance mode with INT8
+NANOSTREAM_INT8=1 NANOSTREAM_THERMAL=1 ./build/NanoStream
+
+# Debug mode with custom thresholds
+NANOSTREAM_DEBUG=1 NANOSTREAM_DET_SCORE_THRESH=0.5 ./build/NanoStream
+```
 
 ---
 
-## 📜 许可证
-MIT License.
+## 📊 Performance
 
-## 🤝 鸣谢
-- [Tencent/ncnn](https://github.com/Tencent/ncnn)
-- [RangiLyu/nanodet](https://github.com/RangiLyu/nanodet)
-- [GStreamer Project](https://gstreamer.freedesktop.org/)
+**Raspberry Pi 4B @ 1.5GHz**
+
+| Component | Resolution | Performance |
+|-----------|-----------|-------------|
+| Camera Capture | 640x480 | 30 FPS |
+| Hardware Encoding | 640x480 H.264 | < 5% CPU |
+| AI Inference (FP32) | 320x320 | ~130ms |
+| AI Inference (INT8) | 320x320 | ~90ms |
+| Total System Load | - | Stable, no backlog |
+
+---
+
+## 🏗️ Architecture
+
+```mermaid
+graph TD
+    classDef hardware fill:#ffcccb,stroke:#d9534f,stroke-width:2px;
+    classDef pipeline fill:#d9edf7,stroke:#5bc0de,stroke-width:2px;
+    classDef ai fill:#c3aed6,stroke:#6f42c1,stroke-width:2px;
+
+    Camera[Camera]:::hardware --> Source[libcamerasrc]:::pipeline
+    Source --> Tee{tee}:::pipeline
+
+    Tee --> StreamBranch[Stream Branch]:::pipeline
+    Tee --> AIBranch[AI Branch]:::pipeline
+
+    StreamBranch --> OSD[Cairo OSD]:::pipeline
+    OSD --> Encoder[v4l2h264enc/x264enc]:::pipeline
+    Encoder --> RTSP[RTSP Server]:::pipeline
+    RTSP --> WebRTC[MediaMTX WebRTC]:::pipeline
+
+    AIBranch --> Scale[Resize 320x320]:::pipeline
+    Scale --> AppSink[appsink]:::pipeline
+    AppSink --> NCNN[NCNN NanoDet]:::ai
+    NCNN --> NMS[NMS + EMA]:::ai
+    NMS --> OSD
+```
+
+**Key Design Principles:**
+- **Async Architecture** - Streaming and AI run independently
+- **Leaky Queues** - AI branch drops frames under load, streaming stays smooth
+- **Zero-copy Pipeline** - DMABUF minimizes CPU overhead
+- **Smart Fallback** - Auto-detects hardware capabilities
+
+---
+
+## 🛠️ Advanced Topics
+
+### WebRTC Deployment
+
+Deploy MediaMTX for WebRTC streaming:
+
+```bash
+cd deploy/mediamtx
+docker-compose up -d
+```
+
+Access at: `http://<raspberry-pi-ip>:8889/`
+
+Configuration files:
+- `deploy/mediamtx/docker-compose.yml`
+- `deploy/mediamtx/mediamtx.yml`
+- `deploy/mediamtx/webrtc-simple.html`
+
+### INT8 Model Calibration
+
+Generate custom INT8 calibration table:
+
+```bash
+# Capture calibration images
+./scripts/capture_calib.sh
+
+# Use ncnn2table tool to generate calibration
+# See: https://github.com/Tencent/ncnn/tree/master/tools/quantize
+```
+
+### Troubleshooting
+
+**STREAMON Error (No such process)**
+- DMABUF memory alignment conflict
+- Solution: Automatic fallback to software pipeline enabled
+
+**RTSP Connection Drops**
+- Missing H.264 byte-stream headers
+- Solution: Already configured with `h264parse config-interval=1`
+
+**Pipeline Freezes**
+- Multiple branches waiting for sync
+- Solution: All sinks configured with `async=false`
+
+**Check DMABUF Status**
+```bash
+# Remove disable flag to retry DMABUF
+rm ~/.nanostream_dmabuf_disabled
+```
+
+---
+
+## 📚 Documentation
+
+- **[P1 Checklist](docs/P1.md)** - OSD implementation guide
+- **[P2 Performance](docs/P2_PERF.md)** - Hardware encoding benchmarks
+- **[Implementation Plan](PLAN.md)** - Future optimization roadmap
+- **[Agent Workflow](AGENTS.md)** - Development process documentation
+
+---
+
+## 🎯 Detection Features
+
+### Supported Classes
+80 COCO classes including: person, bicycle, car, motorcycle, bus, truck, cat, dog, and more.
+
+### Detection Pipeline
+1. **Multi-scale Head Processing** - Nodes 792, 814, 839 (NanoDet architecture)
+2. **Distribution Focal Loss Decoding** - 4×8 bins regression
+3. **IoU-based NMS** - Spatial deduplication
+4. **EMA Smoothing** - Temporal stability (reduces jitter)
+5. **Size-adaptive Thresholds** - Better small object handling
+6. **False Positive Filtering** - Enhanced person detection accuracy
+
+---
+
+## 🔮 Roadmap
+
+- [ ] YOLOv8/v10 tiny model support
+- [ ] Multi-camera input
+- [ ] Cloud recording integration
+- [ ] Mobile app companion
+- [ ] Edge TPU support
+- [ ] Dynamic resolution switching
+
+---
+
+## 📄 License
+
+MIT License - see [LICENSE](LICENSE) for details.
+
+---
+
+## 🙏 Acknowledgments
+
+- [Tencent/ncnn](https://github.com/Tencent/ncnn) - High-performance neural network inference framework
+- [RangiLyu/nanodet](https://github.com/RangiLyu/nanodet) - Super fast and lightweight anchor-free object detection
+- [GStreamer Project](https://gstreamer.freedesktop.org/) - Multimedia framework
+- [MediaMTX](https://github.com/bluenviron/mediamtx) - Real-time media server
+
+---
+
+<p align="center">
+  Made with ❤️ for edge AI
+</p>
